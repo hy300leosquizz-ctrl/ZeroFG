@@ -73,4 +73,6 @@ AI-generated analysis, designs, code suggestions, and documentation are treated 
 
 ## Licensing
 
-No new license or provenance claim is introduced by this standalone extraction. Preserve and follow any notices present in the source files, and do not infer additional reuse rights solely from the repository being public.
+Unless otherwise noted, the ZeroFG-specific contents of this repository are licensed under the **Apache License, Version 2.0** (`Apache-2.0`). See [`LICENSE`](LICENSE).
+
+The license is applied without modifying the published V1 engine snapshot: the 13 V1 source/shader files remain byte-for-byte identical to the historical checkpoint used for this standalone extraction. Any third-party material added in the future remains subject to its own license and must be identified separately.

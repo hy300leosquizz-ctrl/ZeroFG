@@ -1,93 +1,76 @@
 # ZeroFG
 
-> Open-source, platform-agnostic frame generation engine focused on mobile platforms.
+> Open-source, platform-agnostic Vulkan frame generation engine focused on mobile implementations.
 
-**Status: Experimental — Functional Proof of Concept**
+**Status: Experimental — Functional V1 Proof of Concept**
 
-ZeroFG is an experimental Vulkan Compute frame-generation project with an initial focus on mobile platforms. A functional implementation is integrated in XenDroid and has produced real intermediate frames in device workloads. The engine is not ready for general-purpose use: image quality, motion estimation, disocclusion handling, pacing integration and GPU overhead are still active development areas.
+ZeroFG is a standalone Vulkan frame-generation engine. This repository preserves the first functional public implementation as a focused V1 source snapshot, independent of XenDroid.
 
-## Current implementation
+The host supplies Vulkan resources and a command buffer. ZeroFG records interpolation work into that command buffer; queue submission, swapchain ownership, presentation, synchronization, and frame pacing remain host responsibilities. V1 targets a single synthetic midpoint (`phase = 0.5`) for use in a 2× integration path.
 
-The current extracted engine represents the latest ZeroFG core present in `XenDroid-ZeroFG-DEV/zerofg-v2-migration`. Its implemented MVP pipeline is intentionally small:
+The implementation was validated at runtime through [XenDroid-ZeroFG](https://github.com/hy300leosquizz-ctrl/XenDroid-ZeroFG), the reference integration and functional proof of concept. This standalone snapshot does not yet have an independently validated build system.
 
-1. extract luma from the previous and current frames;
-2. estimate block motion with an 8×8 SAD search over a ±4-pixel radius;
-3. retain a simple confidence value for the selected motion vector;
-4. warp previous/current color samples toward the midpoint;
-5. blend warped and non-warped fallback samples according to confidence;
-6. write an internal synthetic image and blit it to the host-provided output.
+## V1 pipeline
 
-The public API exposes `Interpolator::Create`, `Resize` and `Interpolate`. ZeroFG records work into a host-provided Vulkan command buffer; queue submission, swapchain ownership, presentation and frame pacing remain host responsibilities.
+The V1 pipeline is intentionally small:
 
-The current MVP targets one midpoint frame (`phase == 0.5`) for a 2× presentation path. The default integration uses three independent frame-resource contexts.
+```text
+previous + current
+        ↓
+       luma
+        ↓
+  block motion
+        ↓
+    confidence
+        ↓
+midpoint warp/blend
+        ↓
+ synthetic frame
+```
 
-## Proof of concept
+It estimates limited block motion between the previous and current images, derives a confidence value, and synthesizes the midpoint by warping and blending samples. This is a functional experiment, not a claim of production-quality interpolation.
 
-The XenDroid integration is the current functional reference:
+## Integration contract
 
-- **XenDroid-ZeroFG** — public integration/reference implementation and functional proof of concept;
-- **XenDroid-ZeroFG-DEV** — private development, experimentation and integration laboratory;
-- **ZeroFG** — this independent engine repository.
+ZeroFG owns the interpolation resources and commands needed by its engine path. The integrating host remains responsible for:
 
-Runtime work in the XenDroid POC has confirmed effective synthetic-frame generation and a `synth → real` presentation path. Host-side pacing and scheduling work remains in the XenDroid integration and is deliberately not part of the extracted core.
+- providing compatible Vulkan images and image views;
+- providing the command buffer in which ZeroFG records work;
+- resource state and synchronization outside the engine contract;
+- queue submission, swapchain management, presentation, and frame pacing.
+
+The public API is in `include/zerofg/zerofg.h`. The implementation and embedded SPIR-V headers are in `src/`, while the corresponding GLSL and checkpoint SPIR-V files are preserved in `shaders/`.
 
 ## Known limitations
 
-The current implementation has observed limitations:
+V1 is a functional proof of concept, not a usable gameplay product. Its known limitations include:
 
-- strong ghosting/smearing during camera motion;
-- motion estimation with insufficient search range and spatial robustness;
-- disocclusion and edge artifacts;
-- high GPU overhead for the current quality level;
-- pacing/scheduling still evolving in the host integration;
-- standalone build/tooling is not yet validated;
-- the current core is the reconstructed V1-quality estimator, while the more advanced V2 estimator is still planned work.
+- severe ghosting and smearing;
+- a limited motion-search range and simple block estimator;
+- poor disocclusion handling;
+- visible edge and motion artifacts;
+- significant GPU overhead for the resulting quality;
+- image quality unsuitable for normal gameplay.
 
-See [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) and [`docs/STATUS.md`](docs/STATUS.md) for the evidence-based project state.
+The public build exists to demonstrate that the V1 frame-generation path produced real synthetic frames, not to offer a practical enhancement.
 
-## Goals
+## Reference V1 POC build
 
-ZeroFG aims to become:
-
-- an independent Vulkan frame-generation engine;
-- mobile-first and low-overhead;
-- straightforward to integrate into different Vulkan hosts;
-- explicit about host/core ownership and synchronization;
-- configurable through cost/quality presets such as **Zero** and **ReallyZero**;
-- progressively stronger in motion estimation, synthesis, disocclusion handling and pacing interoperability.
-
-## Repository layout
-
-- `include/zerofg/` — public engine API;
-- `src/` — current Vulkan implementation and internal helpers;
-- `shaders/` — ZeroFG-owned GLSL compute shader sources;
-- `docs/` — architecture, integration contract, status, limitations, roadmap and licensing/provenance notes;
-- `integrations/XENDROID.md` — reference integration architecture for XenDroid.
-
-Generated embedded SPIR-V headers retained under `src/` correspond to the included ZeroFG shader sources and are required by the currently extracted implementation. Raw `.spv` build outputs are intentionally not included.
+The [ZeroFG V1 Functional POC — Experimental](https://github.com/hy300leosquizz-ctrl/XenDroid-ZeroFG/releases/tag/v1-poc) release contains the reference XenDroid integration APK. It is a demonstration artifact and is not intended for daily use or normal gameplay.
 
 ## Building
 
-A standalone build system is **not yet claimed to be functional**. The implementation validated so far is built through the XenDroid Android/Gradle integration. The previous in-tree CMake target depended on XenDroid/Xenia's vendored Vulkan-Headers path, so it has not been promoted as a standalone build definition here.
+No standalone build is claimed or documented yet. The historical in-tree CMake target depended on the XenDroid/Xenia source tree and was deliberately not promoted here. The validated integration is maintained in [XenDroid-ZeroFG](https://github.com/hy300leosquizz-ctrl/XenDroid-ZeroFG).
 
-The standalone build task is to establish a normal Vulkan-Headers dependency and reproducible shader compilation/embedding, then validate that configuration independently. Until that happens, this repository should be treated as a faithful source extraction and API bootstrap, not as a verified standalone build.
+## Development and credits
 
-## Documentation
+ZeroFG is developed through human–AI collaboration.
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — implemented architecture versus planned work;
-- [`docs/INTEGRATION.md`](docs/INTEGRATION.md) — host-agnostic Vulkan integration contract;
-- [`integrations/XENDROID.md`](integrations/XENDROID.md) — current XenDroid reference integration;
-- [`docs/STATUS.md`](docs/STATUS.md) — validated, implemented, planned and experimental state;
-- [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md) — observed limitations;
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) — next development stages;
-- [`docs/LICENSING.md`](docs/LICENSING.md) — licensing/provenance status.
+- **hy300leosquizz** ([`hy300leosquizz-ctrl`](https://github.com/hy300leosquizz-ctrl)) — creator and project maintainer; responsible for engineering direction, integration, device and runtime testing, and final technical decisions.
+- **Zeromeia** — the project name for an AI development collaborator powered by ChatGPT by OpenAI. Zeromeia is used extensively across the development pipeline, including architecture, technical and runtime analysis, algorithm and experiment design, code-generation guidance, Codex task design, code review, debugging, log analysis, documentation, repository organization, and release preparation.
 
-## Licensing status
+AI-generated analysis, designs, code suggestions, and documentation are treated as engineering inputs. Final project decisions, device testing, validation, and publication remain under the control of the human maintainer. The name Zeromeia describes the project's use of ChatGPT and does not imply sponsorship or endorsement by OpenAI, legal personhood, copyright ownership, or independent publication authority.
 
-The final standalone license is **pending provenance review**. The ZeroFG-specific files extracted from the XenDroid development history do not currently carry an explicit file-level license, and no blanket license is asserted in this bootstrap. XenDroid/Xenia implementation files and unrelated third-party components are not copied into the core repository.
+## Licensing
 
-Until a top-level license is deliberately selected after provenance review, do not infer reuse rights merely from public repository visibility. See [`docs/LICENSING.md`](docs/LICENSING.md).
-
-## Research references
-
-ZeroFG development has used other frame-generation systems, including GHFG/GameScopeV2, only as research and comparative references. No proprietary GHFG/GameScopeV2 code, extracted shader blob or proprietary implementation is included in this repository.
+No new license or provenance claim is introduced by this standalone extraction. Preserve and follow any notices present in the source files, and do not infer additional reuse rights solely from the repository being public.

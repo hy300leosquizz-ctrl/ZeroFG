@@ -112,5 +112,8 @@ These took most of the two months, and each has a measured reason behind it:
 
 ## License
 
-Apache-2.0, like the rest of this repository. The XenDroid and Xenia files it
-depends on keep their own licenses.
+Apache-2.0, like the rest of this repository, with two exceptions that keep
+Xenia's BSD 3-Clause license ([LICENSE-Xenia](LICENSE-Xenia)):
+`vulkan_presenter_zerofg_device_context.inc`, adapted from Xenia's presenter, and
+`xendroid_glue/vulkan_presenter_zerofg_glue.cc`, an excerpt of it. The XenDroid
+and Xenia files it depends on keep their own licenses.

@@ -31,7 +31,8 @@ an emulator.
 | `Mode::kReallyZero` | The same engine with half the fine passes, for weaker GPUs | Adreno 840: 1.7 ms · Adreno 650: 5.4 ms |
 
 The times are laboratory measurements of the generation alone, on a fixed
-workload. ReallyZero stays within 0.2 dB of Zero on our measurement streams.
+workload. ReallyZero stays within about 0.2 dB of Zero on our real-content
+measurement streams (fast synthetic motion loses more).
 
 ## How the engine works
 
@@ -99,6 +100,9 @@ Built and checked on Windows (clang, llvm-mingw) and Android (NDK r29,
 arm64-v8a). The presenter in `host/` is a reference: it builds inside
 XenDroid-ZeroFG, and its README lists what it needs from there.
 
+ZeroFG has been runtime-validated in games on one device (Adreno 840); the
+Adreno 650 is additionally qualified in the laboratory.
+
 ## By the numbers
 
 Two months, August to October 2026: 736 commits, more than 137,000 lines
@@ -129,3 +133,9 @@ AI-generated analysis, designs, code and documentation are engineering inputs. F
 
 Licensed under the **Apache License, Version 2.0** (`Apache-2.0`). See
 [`LICENSE`](LICENSE).
+
+Two reference files in `host/xenia-android/` come from Xenia and keep its BSD
+3-Clause license ([`LICENSE-Xenia`](host/xenia-android/LICENSE-Xenia)):
+`vulkan_presenter_zerofg_device_context.inc` (adapted from Xenia's presenter)
+and `xendroid_glue/vulkan_presenter_zerofg_glue.cc` (an excerpt of it). A
+provenance check found no code shared with Xenia or XenDroid in any other file.

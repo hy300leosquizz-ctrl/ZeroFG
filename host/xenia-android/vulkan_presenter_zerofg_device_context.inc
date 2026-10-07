@@ -1,3 +1,15 @@
+/**
+ ******************************************************************************
+ * Xenia : Xbox 360 Emulator Research Project                                 *
+ ******************************************************************************
+ * Copyright 2022 Ben Vanik. All rights reserved.                             *
+ * Released under the BSD license - see LICENSE in the root for more details. *
+ ******************************************************************************
+ */
+// Adapted for ZeroFG from xenia/ui/vulkan/vulkan_presenter.cc: the output
+// pipelines and descriptor layouts below follow Xenia's own, built on ZeroFG's
+// device B. This file stays under Xenia's BSD 3-Clause license.
+
 // Host-only device-B execution subset. Native paint/WSI remains on A.
 VulkanPresenter::ZeroFGPresenterVulkanContext::ZeroFGPresenterVulkanContext(
     VulkanDevice* source)

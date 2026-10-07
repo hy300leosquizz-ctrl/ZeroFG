@@ -14,6 +14,20 @@ synchronization and the presentation. ZeroFG owns its pipelines, its working
 memory and the commands it records into the command buffer you pass it. It
 never submits, never waits and never presents.
 
+## 0. Add it to your build
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(zerofg
+  GIT_REPOSITORY https://github.com/hy300leosquizz-ctrl/ZeroFG.git
+  GIT_TAG v1.0.0)
+FetchContent_MakeAvailable(zerofg)
+target_link_libraries(my_host PRIVATE zerofg::zerofg)
+```
+
+(or `add_subdirectory` on a copy). You need Python 3 and the Vulkan SDK's
+`glslangValidator` and `spirv-opt` at build time; see the README.
+
 ## 1. Create
 
 ```cpp

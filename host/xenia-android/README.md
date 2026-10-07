@@ -24,11 +24,14 @@ your host needs.
 | `vulkan_presenter_zerofg_source_adapter.inc` | Publishing each finished game frame to the presenter |
 | `zerofg_config.h` | The user settings: mode (off, zero, reallyzero) and the GPU guard |
 | `zerofg_xenia_adapter.h/.cc` | The thin wrapper XenDroid uses around `zerofg::Interpolator` |
+| `xendroid_glue/vulkan_presenter_zerofg_glue.cc` | The other half: the callbacks inside XenDroid's own presenter that record a Generation, run the normal output pipeline on a frame (the Post) and hand the surface over |
 
-The rest of the integration lives in XenDroid's `vulkan_presenter.cc`: the
-callbacks that record a generation (`ProcessZeroFGGeneration`,
-`PollZeroFGGeneration`), run the normal XenDroid output pipeline on a frame
-(`ProcessZeroFGPost`), and hand the surface over.
+The rest of the integration lives inside XenDroid's own presenter
+(`vulkan_presenter.cc`, a Xenia file). Its ZeroFG functions are copied in
+`xendroid_glue/` as an excerpt: `ProcessZeroFGGeneration` and
+`PollZeroFGGeneration` record and watch a generation, `ProcessZeroFGPost` runs
+the normal output pipeline on a frame, and the surface functions hand the
+screen over.
 
 ## How it is driven
 
@@ -70,6 +73,26 @@ time.
 | `xenia/base/logging.h`, `xenia/base/cvar.h`, `xenia/base/platform.h` | logs, settings, platform switches | your logger and settings |
 | `emulator.h` (XenDroid's Android host) | nothing (an include left over; drop it) | — |
 | Android: `AHardwareBuffer`, sync files, `ANativeWindow`, `VK_GOOGLE_display_timing` | moving frames between devices, presenting, reading when frames reached the screen | the same on Android; equivalents elsewhere |
+
+## Porting it to another host
+
+1. **Add the engine** to your build (see [INTEGRATION.md](../../INTEGRATION.md)).
+2. **Give ZeroFG its own Vulkan device** on the same GPU, with a queue that can
+   present, Vulkan 1.3 and synchronization2. `vulkan_presenter_zerofg_device_context.inc`
+   shows what XenDroid enables.
+3. **Replace the XenDroid types** in the table above with yours: the device
+   wrapper, the output settings, the frame timestamps, the logger and the
+   settings.
+4. **Publish your frames**: call `PublicationCommitted` when a game frame is
+   finished, and answer `IngressSourceAcquireCallback` with it.
+5. **Implement the callbacks** following `xendroid_glue/`: a Generation records
+   `zerofg::Interpolator::Interpolate` and submits it; a Post runs your own
+   output pipeline.
+6. **Hand the screen over** with `Connect` and the surface methods, so your
+   presenter and ZeroFG never present at the same time.
+
+Making this semi-automatic (the presenter behind a small host interface, so it
+builds outside XenDroid unchanged) is the next step for this repository.
 
 ## The rules it keeps
 

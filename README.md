@@ -84,6 +84,17 @@ add_subdirectory(third_party/ZeroFG)
 target_link_libraries(my_host PRIVATE zerofg::zerofg)
 ```
 
+Or let CMake fetch it:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(zerofg
+  GIT_REPOSITORY https://github.com/hy300leosquizz-ctrl/ZeroFG.git
+  GIT_TAG v1.0.0)
+FetchContent_MakeAvailable(zerofg)
+target_link_libraries(my_host PRIVATE zerofg::zerofg)
+```
+
 Built and checked on Windows (clang, llvm-mingw) and Android (NDK r29,
 arm64-v8a). The presenter in `host/` is a reference: it builds inside
 XenDroid-ZeroFG, and its README lists what it needs from there.
@@ -108,7 +119,7 @@ against ground truth in the laboratory and in play.
 
 ZeroFG is developed through human–AI collaboration.
 
-- **hy300leosquizz** ([`hy300leosquizz-ctrl`](https://github.com/hy300leosquizz-ctrl)) — creator and project maintainer; engineering direction, integration, device and runtime testing, and every final decision.
+- **hy300leosquizz** ([`hy300leosquizz-ctrl`](https://github.com/hy300leosquizz-ctrl)) — creator and maintainer. Lawyer by trade, Formula 1 podcast presenter by passion, and software architect *honoris causa* after two months of very long nights: he drew the architecture, set the direction, made every final call, and ran every test on his own phone, usually a hot one.
 - **Zeromeia** — the project name for an AI development collaborator powered by ChatGPT by OpenAI: architecture, runtime and log analysis, experiment design, code review, documentation and release preparation.
 - **Zé Raio** — the project name for an AI development collaborator powered by Claude by Anthropic: implementation, the measurement laboratory, log analysis, documentation and release preparation.
 

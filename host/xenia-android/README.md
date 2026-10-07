@@ -17,12 +17,12 @@ your host needs.
 | File | What it does |
 | --- | --- |
 | `zerofg_independent_presenter.h/.cc` | The presenter: capture and residency of real frames, admission of generated frames, the pacing clock, production (generation and post), the order of what is shown, the fallback |
-| `zerofg_main_surface_egress.h/.cc` | Presentation on the game's own Android surface from ZeroFG's device: one present per display refresh, never waiting for the display, learning system frame caps (its output shaper, the old GPU guard, is off in 1.0) |
+| `zerofg_main_surface_egress.h/.cc` | Presentation on the game's own Android surface from ZeroFG's device: one present per display refresh, never waiting for the display, learning system frame caps, and the GPU guard (two refreshes per output once a throttled GPU makes the image stutter) |
 | `zerofg_device_handoff.h/.inc` | Moving each real frame from the game's Vulkan device to ZeroFG's (Android hardware buffers and sync files) |
 | `zerofg_completion_owner.h` | Proving GPU completion without ever blocking (timelines and sync files) |
 | `vulkan_presenter_zerofg_device_context.inc` | Creating ZeroFG's own Vulkan device and its output pipelines |
 | `vulkan_presenter_zerofg_source_adapter.inc` | Publishing each finished game frame to the presenter |
-| `zerofg_config.h` | The user setting: mode (off, zero, reallyzero) |
+| `zerofg_config.h` | The user settings: mode (off, zero, reallyzero) and the GPU guard |
 | `zerofg_xenia_adapter.h/.cc` | The thin wrapper XenDroid uses around `zerofg::Interpolator` |
 | `xendroid_glue/vulkan_presenter_zerofg_glue.cc` | The other half: the callbacks inside XenDroid's own presenter that record a Generation, run the normal output pipeline on a frame (the Post) and hand the surface over |
 

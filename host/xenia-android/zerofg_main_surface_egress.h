@@ -380,7 +380,10 @@ class ZeroFGMainSurfaceEgress {
   // desired present time to hand to the compositor and the slot in
   // assigned_ns (0 and the logical target when the lattice is not known yet).
   uint64_t QuantizeToVsync(uint64_t target_ns, uint64_t now_ns,
-                           uint64_t& assigned_ns);
+                           uint64_t& assigned_ns, uint32_t stride);
+  // GPU guard with the quantizer: the refreshes each output gets (1, or the
+  // refreshes in one 60 Hz period once the guard has latched).
+  uint32_t GuardStride(const Request& request);
   // The compositor latches a buffer for vsync V about one refresh before V
   // (shown frames were displayed 8.5-14 ms after ready, 2026-10-07): a slot is
   // reachable when the copy is predicted ready one refresh plus this margin

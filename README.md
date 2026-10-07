@@ -100,9 +100,9 @@ ZeroFG is developed through human–AI collaboration.
 
 - **hy300leosquizz** ([`hy300leosquizz-ctrl`](https://github.com/hy300leosquizz-ctrl)) — creator and project maintainer; responsible for engineering direction, integration, device and runtime testing, and final technical decisions.
 - **Zeromeia** — the project name for an AI development collaborator powered by ChatGPT by OpenAI, used across the pipeline: architecture, runtime and log analysis, experiment design, code review, documentation and release preparation.
-- **Claude** (Anthropic) — AI coding collaborator: implementation, the measurement laboratory, log analysis, documentation and release preparation.
+- **Zé Raio** — the project name for an AI development collaborator powered by Claude by Anthropic, used for implementation, the measurement laboratory, log analysis, documentation and release preparation.
 
-AI-generated analysis, designs, code and documentation are treated as engineering inputs. Final project decisions, device testing, validation and publication remain under the control of the human maintainer. The names above describe the tools used and do not imply sponsorship or endorsement by OpenAI or Anthropic.
+AI-generated analysis, designs, code and documentation are treated as engineering inputs. Final project decisions, device testing, validation and publication remain under the control of the human maintainer. The names Zeromeia and Zé Raio describe the project's use of ChatGPT and Claude and do not imply sponsorship or endorsement by OpenAI or Anthropic.
 
 ## License
 

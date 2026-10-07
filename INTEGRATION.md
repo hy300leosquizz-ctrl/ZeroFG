@@ -3,8 +3,9 @@
 This page is for anyone putting ZeroFG into a Vulkan host. The whole public API
 is [`include/zerofg/zerofg.h`](include/zerofg/zerofg.h) and
 [`include/zerofg/backend_capabilities.h`](include/zerofg/backend_capabilities.h).
-The reference integration, with everything below working on Android, is
-[XenDroid-ZeroFG](https://github.com/hy300leosquizz-ctrl/XenDroid-ZeroFG).
+Everything below runs for real in the presenter in [`host/xenia-android/`](host/xenia-android/),
+the one that ships in [XenDroid-ZeroFG](https://github.com/hy300leosquizz-ctrl/XenDroid-ZeroFG).
+When a step here says what to do, that code shows how we did it.
 
 ## The contract in one paragraph
 

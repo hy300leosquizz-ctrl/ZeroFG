@@ -1,15 +1,27 @@
 # ZeroFG
 
-> A Vulkan frame generation engine for mobile GPUs. **Version 1.0.**
+> Frame generation for mobile GPUs, built on Vulkan. **Version 1.0.**
 
-ZeroFG takes two frames a game rendered and creates the frame halfway between
-them. Shown in between, the generated frames double the frame rate: 60 fps
-becomes 120, 30 becomes 60. ZeroFG only records GPU work into a command buffer
-you give it, so it can live inside any Vulkan host: an emulator, a game, a
-compositor.
+ZeroFG takes two frames a game rendered and creates the one halfway between
+them. Shown in between, those frames double the frame rate: 60 fps becomes
+120, 30 becomes 60.
 
-ZeroFG 1.0 is the engine of [XenDroid-ZeroFG](https://github.com/hy300leosquizz-ctrl/XenDroid-ZeroFG),
-where it runs in play on Android at 120 frames per second.
+This repository has everything we built to make that work on a phone:
+
+- **the engine** (`include/`, `src/`, `shaders/`): records the GPU work that
+  generates a frame into a command buffer you give it. It owns no queue and no
+  timing, so it fits into any Vulkan host;
+- **the presenter** (`host/xenia-android/`): the part that turns the engine
+  into frame generation on a real device. It captures the game's frames,
+  paces generation, keeps real frames in order and presents on the screen
+  without ever slowing the game. This is where most of the work went;
+- **the integration notes** ([INTEGRATION.md](INTEGRATION.md)): how to bring
+  ZeroFG into your own host, step by step.
+
+ZeroFG was born inside [XenDroid-ZeroFG](https://github.com/hy300leosquizz-ctrl/XenDroid-ZeroFG),
+an Xbox 360 emulator for Android, where it runs in play at 120 frames per
+second. It was built there, not for there: the engine has no idea it is inside
+an emulator.
 
 ## Two modes
 
@@ -21,31 +33,23 @@ where it runs in play on Android at 120 frames per second.
 The times are laboratory measurements of the generation alone, on a fixed
 workload. ReallyZero stays within 0.2 dB of Zero on our measurement streams.
 
-## How it works
+## How the engine works
 
 For every pair of frames A and B, ZeroFG:
 
-1. **models the exposure** between them (gain, bias, correlation), so fades and
-   flashes are not mistaken for motion;
-2. **estimates motion on a 20-pixel cell grid**, coarse to fine, and tests a
-   few global camera hypotheses;
-3. **verifies every cell at full resolution** with four propagation passes
-   (two in ReallyZero), seeded by the previous pair's motion as a temporal
-   prior;
-4. **guards continuity**: a vector that would tear the scene apart, or that the
+1. works out the exposure change between them (gain, bias, correlation), so
+   fades and flashes are not mistaken for motion;
+2. estimates motion on a 20-pixel cell grid, coarse to fine, and tests a few
+   global camera hypotheses;
+3. verifies every cell at full resolution with four propagation passes (two in
+   ReallyZero), starting from the previous pair's motion;
+4. guards continuity: a vector that would tear the scene apart, or that the
    evidence does not support, falls back to a safe blend;
-5. **resolves the midpoint frame**, warping both sources by their trust and
-   rebuilding the final colour with a sharp kernel.
+5. resolves the midpoint frame, warping both sources by how much it trusts
+   them and rebuilding the final colour with a sharp kernel.
 
-Static HUDs, text and overlays stay where they are instead of smearing with the
-motion behind them.
-
-## What ZeroFG does not do
-
-ZeroFG owns its GPU resources and the commands it records. It does not own a
-queue, a swapchain, presentation, frame pacing or any synchronization with your
-renderer. Deciding when to generate, how to wait for the inputs and when to
-show what is the host's job. [INTEGRATION.md](INTEGRATION.md) explains how.
+HUDs, text and static overlays stay where they belong instead of smearing with
+the world behind them.
 
 ## Requirements
 
@@ -53,29 +57,27 @@ show what is the host's job. [INTEGRATION.md](INTEGRATION.md) explains how.
   `shaderStorageImageExtendedFormats` enabled.
 - `R8_UNORM` storage images, `A2B10G10R10_UNORM_PACK32` storage images that can
   be blitted from, and an input format that can be sampled with linear filtering.
-- A picture size that the 64-cell grid divides exactly (1280 x 720 and
-  1920 x 1080 both work). Other sizes are refused, not run in a weaker mode.
+- A picture size the 64-cell grid divides exactly (1280 x 720 and 1920 x 1080
+  both work). Other sizes are refused, never run in a weaker mode.
 
-Optional features the device really has enabled make it faster (half-precision
-colour, 64-wide subgroups, cubic filtering). Every backend produces the same
+Optional features the device has enabled make it faster (half-precision
+colour, 64-wide subgroups, cubic filtering). Every backend gives the same
 logical result.
 
-## Building
+## Building the engine
 
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-This builds the static library `zerofg` (alias `zerofg::zerofg`). It needs
+This builds the static library `zerofg` (alias `zerofg::zerofg`). You need
 Python 3, plus `glslangValidator` and `spirv-opt` from the Vulkan SDK (set
 `VULKAN_SDK`, or put both on `PATH`). The Vulkan headers come from
-`find_package(Vulkan)`, or from `-DZEROFG_VULKAN_HEADERS_DIR=<dir>`. With the
-Android NDK toolchain, the NDK's own headers are found. The library never links
+`find_package(Vulkan)`, or from `-DZEROFG_VULKAN_HEADERS_DIR=<dir>`; with the
+Android NDK toolchain, the NDK's own headers are used. The library never links
 a Vulkan loader: every entry point comes from the `vkGetInstanceProcAddr` you
 pass in.
-
-In your project:
 
 ```cmake
 add_subdirectory(third_party/ZeroFG)
@@ -83,26 +85,34 @@ target_link_libraries(my_host PRIVATE zerofg::zerofg)
 ```
 
 Built and checked on Windows (clang, llvm-mingw) and Android (NDK r29,
-arm64-v8a).
+arm64-v8a). The presenter in `host/` is a reference: it builds inside
+XenDroid-ZeroFG, and its README lists what it needs from there.
+
+## By the numbers
+
+Two months, August to October 2026: 736 commits, more than 137,000 lines
+written and 64,000 rewritten away, about 64,000 lines of original code (the
+engines from RC1 to Zero, the presenter, and a laboratory that tests the engine
+against ground truth) and 34,000 lines of engineering notes.
 
 ## From V1 to 1.0
 
-V1 (August 2026) was the first functional engine: block motion, a confidence
-value and a midpoint blend. It produced real frames and strong ghosting. It
-remains in this repository's history. 1.0 replaces it entirely: a new motion
-estimator verified at full resolution, a temporal prior, an exposure model, a
-continuity guard and a new resolve, measured against ground truth in a
-dedicated laboratory and in play.
+V1 (August 2026) was the first engine that worked: block motion, a confidence
+value and a blend. It produced real frames and strong ghosting, and it had no
+presenter at all. It stays in this repository's history. 1.0 replaces all of
+it: a new motion estimator verified at full resolution, a temporal prior, an
+exposure model, a continuity guard, a new resolve, and the presenter, measured
+against ground truth in the laboratory and in play.
 
 ## Development and credits
 
 ZeroFG is developed through human–AI collaboration.
 
-- **hy300leosquizz** ([`hy300leosquizz-ctrl`](https://github.com/hy300leosquizz-ctrl)) — creator and project maintainer; responsible for engineering direction, integration, device and runtime testing, and final technical decisions.
-- **Zeromeia** — the project name for an AI development collaborator powered by ChatGPT by OpenAI, used across the pipeline: architecture, runtime and log analysis, experiment design, code review, documentation and release preparation.
-- **Zé Raio** — the project name for an AI development collaborator powered by Claude by Anthropic, used for implementation, the measurement laboratory, log analysis, documentation and release preparation.
+- **hy300leosquizz** ([`hy300leosquizz-ctrl`](https://github.com/hy300leosquizz-ctrl)) — creator and project maintainer; engineering direction, integration, device and runtime testing, and every final decision.
+- **Zeromeia** — the project name for an AI development collaborator powered by ChatGPT by OpenAI: architecture, runtime and log analysis, experiment design, code review, documentation and release preparation.
+- **Zé Raio** — the project name for an AI development collaborator powered by Claude by Anthropic: implementation, the measurement laboratory, log analysis, documentation and release preparation.
 
-AI-generated analysis, designs, code and documentation are treated as engineering inputs. Final project decisions, device testing, validation and publication remain under the control of the human maintainer. The names Zeromeia and Zé Raio describe the project's use of ChatGPT and Claude and do not imply sponsorship or endorsement by OpenAI or Anthropic.
+AI-generated analysis, designs, code and documentation are engineering inputs. Final decisions, device testing, validation and publication stay with the human maintainer. The names Zeromeia and Zé Raio describe the project's use of ChatGPT and Claude and do not imply sponsorship or endorsement by OpenAI or Anthropic.
 
 ## License
 

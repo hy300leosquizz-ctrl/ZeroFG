@@ -7,7 +7,6 @@
 
 DECLARE_bool(zerofg_frame_generation);
 DECLARE_string(zerofg_mode);
-DECLARE_bool(zerofg_gpu_guard);
 
 namespace xe::ui::vulkan {
 

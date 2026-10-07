@@ -3082,7 +3082,10 @@ struct ZeroFGIndependentPresenter::Impl {
     auto egress = std::make_unique<ZeroFGMainSurfaceEgress>(
         vulkan_device, &main_surface_producer, main_surface, extent,
         final_output_format, kFinalOutputPoolSize, elevated_presenter_priority,
-        cvars::zerofg_gpu_guard, /*free_output=*/true,
+        // The output shaper (the GPU guard) was tuned for the FIFO egress;
+        // with free output and the vsync quantizer its push stacks on the
+        // quantizer's lead (35-75 ms, Arkham 2026-10-07), so it stays off.
+        /*apocalypse_guard=*/false, /*free_output=*/true,
         /*vsync_quantizer=*/true,
         [egress_bridge]() { SignalPresenterWake(egress_bridge); });
     const bool egress_started = egress->Start();

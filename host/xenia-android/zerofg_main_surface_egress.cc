@@ -994,20 +994,16 @@ bool ZeroFGMainSurfaceEgress::ServeRequest(const Request& request,
     }
     VkPresentTimeGOOGLE present_time = {};
     present_time.presentID = uint32_t(request.sequence_id);
-    // request.desired_present_ns stays the target-vs-actual telemetry
-    // reference. With the vsync quantizer the GPU guard spaces outputs on its
-    // lattice (a stride of refreshes); without it, the guard's own shaper
-    // raises the desired time.
-    present_time.desiredPresentTime = request.desired_present_ns;
+    // The Apocalypse Guard may raise it; request.desired_present_ns stays the
+    // target-vs-actual telemetry reference.
+    present_time.desiredPresentTime =
+        apocalypse_guard_ ? ShapeDesiredPresent(request, EgressMonotonicTimeNs())
+                          : request.desired_present_ns;
     context.assigned_vsync_ns = 0;
     if (vsync_quantizer_) {
-      const uint32_t stride = apocalypse_guard_ ? GuardStride(request) : 1;
       present_time.desiredPresentTime =
-          QuantizeToVsync(request.desired_present_ns, EgressMonotonicTimeNs(),
-                          context.assigned_vsync_ns, stride);
-    } else if (apocalypse_guard_) {
-      present_time.desiredPresentTime =
-          ShapeDesiredPresent(request, EgressMonotonicTimeNs());
+          QuantizeToVsync(present_time.desiredPresentTime,
+                          EgressMonotonicTimeNs(), context.assigned_vsync_ns);
     }
     VkPresentTimesInfoGOOGLE present_times = {
         VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE};
@@ -1156,33 +1152,6 @@ uint64_t ZeroFGMainSurfaceEgress::ShapeDesiredPresent(const Request& request,
   shaper_latest_display_ns_ =
       std::max(desired_ns + refresh_ns, now_ns + latency_ns);
   return desired_ns;
-}
-
-// With the vsync quantizer the guard does not move desired times: once
-// latched, the quantizer gives each output `vblanks` refreshes of its own (2 at
-// 120 Hz), so no two outputs show less than one 60 Hz period apart, on the
-// refresh lattice the display reports. The extra latency is the quantizer's
-// own phase: it grows when an output cannot make its vsync and is shed at the
-// gaps, instead of a wall-clock push stacking on top of it (the FIFO-era
-// shaper pushed 35-75 ms there and starved the free output, Arkham GT off,
-// 2026-10-07). Same eligibility and the same one-way latch as the shaper.
-uint32_t ZeroFGMainSurfaceEgress::GuardStride(const Request& request) {
-  std::lock_guard<std::mutex> lock(stats_mutex_);
-  const uint64_t refresh_ns = counters_.refresh_cycle_now_ns;
-  const uint64_t spacing_floor_ns = kShaperSpacingNs - kShaperSpacingNs / 20;
-  const uint64_t vblanks =
-      refresh_ns ? (spacing_floor_ns + refresh_ns - 1) / refresh_ns : 0;
-  if (vblanks < 2 || request.output_quantum_ns < spacing_floor_ns) {
-    ResetLatchWindow();
-    return 1;
-  }
-  if (!counters_.apocalypse_latched) {
-    ObserveLatchArrival(request.apply_time_ns, refresh_ns);
-    if (!counters_.apocalypse_latched) {
-      return 1;
-    }
-  }
-  return uint32_t(vblanks);
 }
 
 void ZeroFGMainSurfaceEgress::ResetLatchWindow() {
@@ -1538,8 +1507,7 @@ void ZeroFGMainSurfaceEgress::ObservePresentCall(uint64_t call_ns,
 
 uint64_t ZeroFGMainSurfaceEgress::QuantizeToVsync(uint64_t target_ns,
                                                  uint64_t now_ns,
-                                                 uint64_t& assigned_ns,
-                                                 uint32_t stride) {
+                                                 uint64_t& assigned_ns) {
   assigned_ns = 0;
   uint64_t period_ns = 0;
   uint64_t copy_ns = 0;
@@ -1569,19 +1537,10 @@ uint64_t ZeroFGMainSurfaceEgress::QuantizeToVsync(uint64_t target_ns,
   bool reanchored = false;
   bool refused = false;
   bool absorbed = false;
-  // The spacing between two assigned vsyncs: one refresh, or the GPU guard's
-  // stride while it is latched.
-  const uint64_t spacing_ns = uint64_t(std::max<uint32_t>(stride, 1)) * period_ns;
-  uint64_t guard_push_ns = 0;
   if (vsync_last_slot_ns_ && slot_ns < vsync_last_slot_ns_ + period_ns / 2) {
     // The previous present has this vsync: the next one, in order.
-    slot_ns = vsync_last_slot_ns_ + spacing_ns;
+    slot_ns = vsync_last_slot_ns_ + period_ns;
     refused = true;
-  } else if (vsync_last_slot_ns_ &&
-             slot_ns < vsync_last_slot_ns_ + spacing_ns - period_ns / 2) {
-    // The guard keeps its stride: this output waits for its own refresh.
-    guard_push_ns = vsync_last_slot_ns_ + spacing_ns - slot_ns;
-    slot_ns = vsync_last_slot_ns_ + spacing_ns;
   }
   if (slot_ns + period_ns / 2 < reach_ns) {
     // Not reachable: the phase moves forward (future-only) to the first
@@ -1591,17 +1550,17 @@ uint64_t ZeroFGMainSurfaceEgress::QuantizeToVsync(uint64_t target_ns,
     vsync_offset_periods_ += periods;
     slot_ns += periods * period_ns;
     reanchored = true;
-  } else if (vsync_offset_periods_ && !refused && !guard_push_ns &&
+  } else if (vsync_offset_periods_ && !refused &&
              slot_ns >= period_ns + reach_ns &&
              (!vsync_last_slot_ns_ ||
-              slot_ns - period_ns >= vsync_last_slot_ns_ + spacing_ns)) {
+              slot_ns - period_ns >= vsync_last_slot_ns_ + period_ns)) {
     // The vsync before is free and reachable (the slow beat of the two clocks
     // left a gap): shed one refresh of phase into it.
     --vsync_offset_periods_;
     slot_ns -= period_ns;
     absorbed = true;
   }
-  if (slot_ns > now_ns + 8 * spacing_ns) {
+  if (slot_ns > now_ns + 8 * period_ns) {
     // A lattice far ahead of now is not a phase any more: start over.
     vsync_offset_periods_ = 0;
     vsync_last_slot_ns_ = 0;
@@ -1620,10 +1579,6 @@ uint64_t ZeroFGMainSurfaceEgress::QuantizeToVsync(uint64_t target_ns,
     }
     if (absorbed) {
       ++counters_.vsync_gap_absorbed;
-    }
-    if (guard_push_ns) {
-      ++counters_.shaper_raised;
-      shaper_push_ns_.Add(guard_push_ns);
     }
   }
   // Half a refresh before the vsync: the compositor targets exactly this one.

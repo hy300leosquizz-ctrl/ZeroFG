@@ -170,8 +170,11 @@ XenDroid-ZeroFG:
   the kernel does not: [host/xenia-android/adrenotools](host/xenia-android/adrenotools/)
   sets the priority of the contexts the driver creates. In XenDroid-ZeroFG
   this took a saturated Arkham City from frames in bursts (a copy of 8 ms
-  waiting 40 to 170 ms) to every generated frame on screen, evenly, with the
-  game a few frames per second slower.
+  waiting 40 to 170 ms) to every generated frame on screen, evenly. Under GPU
+  saturation, this may trade some game throughput for much lower
+  frame-generation latency. Treat it as part of the integration, not as a
+  tuning option: without it, two devices or contexts are not isolated in time
+  under saturation, and ZeroFG's own device cannot do its job.
 
 ## 7. Threading and teardown
 

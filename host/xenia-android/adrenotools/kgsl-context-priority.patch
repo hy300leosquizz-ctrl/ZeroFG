@@ -237,10 +237,18 @@ index ebff0639d..870a58ed8 100644
 +target_link_libraries(kgsl_priority_hook hook_impl)
 +set_target_properties(kgsl_priority_hook PROPERTIES CXX_VISIBILITY_PRESET hidden)
 diff --git a/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/hook_impl.cpp b/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/hook_impl.cpp
-index 50e79a946..3d0af8d05 100644
+index 50e79a946..54b092bf3 100644
 --- a/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/hook_impl.cpp
 +++ b/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/hook_impl.cpp
-@@ -86,6 +86,14 @@ __attribute__((visibility("default"))) void *hook_android_dlopen_ext(const char
+@@ -5,6 +5,7 @@
+ #include <dlfcn.h>
+ #include <fcntl.h>
+ #include <sys/ioctl.h>
++#include <unistd.h>
+ #include <android_linker_ns.h>
+ #include <android/dlext.h>
+ #include <android/log.h>
+@@ -86,6 +87,14 @@ __attribute__((visibility("default"))) void *hook_android_dlopen_ext(const char
          LOGI("hook_android_dlopen_ext: applied libfile_redirect_hook");
      }
  
@@ -255,17 +263,30 @@ index 50e79a946..3d0af8d05 100644
      // Use our new namespace to load the vulkan driver
      auto newExtinfo{*extinfo};
      newExtinfo.library_namespace = driverNs;
-@@ -169,6 +177,26 @@ __attribute__((visibility("default"))) FILE *hook_fopen(const char *filename, co
+@@ -169,6 +178,39 @@ __attribute__((visibility("default"))) FILE *hook_fopen(const char *filename, co
      return fopen(replacement.c_str(), mode);
  }
  
++// Whether fd is a KGSL device node (/dev/kgsl-3d0): the ioctl number alone
++// could in principle belong to another driver.
++static bool is_kgsl_fd(int fd) {
++    char path[32];
++    char target[64];
++    snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
++    ssize_t length{readlink(path, target, sizeof(target) - 1)};
++    if (length <= 0)
++        return false;
++    target[length] = '\0';
++    return strstr(target, "/dev/kgsl") != nullptr;
++}
++
 +// Every ioctl the driver makes passes here; only a draw context's creation is
 +// changed, and only while a priority is set: its KGSL priority field.
 +__attribute__((visibility("default"))) int hook_ioctl(int fd, int request, void *arg) {
 +    if (static_cast<uint32_t>(request) == static_cast<uint32_t>(IOCTL_KGSL_DRAWCTXT_CREATE) && arg &&
 +        hook_params && hook_params->contextPriority) {
 +        uint32_t priority{hook_params->contextPriority->load(std::memory_order_acquire)};
-+        if (priority) {
++        if (priority && is_kgsl_fd(fd)) {
 +            auto create{reinterpret_cast<kgsl_drawctxt_create *>(arg)};
 +            create->flags = (create->flags & ~KGSL_CONTEXT_PRIORITY_MASK) |
 +                            ((priority << KGSL_CONTEXT_PRIORITY_SHIFT) & KGSL_CONTEXT_PRIORITY_MASK);
@@ -331,15 +352,21 @@ index 8a3bd1673..5dae8992a 100644
  };
 diff --git a/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/kgsl_priority_hook.c b/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/kgsl_priority_hook.c
 new file mode 100644
-index 000000000..3b80e924a
+index 000000000..d9f587693
 --- /dev/null
 +++ b/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/kgsl_priority_hook.c
-@@ -0,0 +1,12 @@
+@@ -0,0 +1,18 @@
 +#include <stdarg.h>
 +#include "hook_impl.h"
 +
 +// Loaded global into the driver's namespace: the driver's ioctl calls land
-+// here. Every KGSL ioctl takes one pointer argument.
++// here and are forwarded exactly as bionic's own ioctl forwards them
++// (libc/bionic/ioctl.cpp reads one void* with va_arg unconditionally and
++// passes it to __ioctl), so this adds no read bionic does not already make.
++// arm64 only (adrenotools refuses other ABIs): the third argument travels in
++// x2 whether or not the caller passed one. hook_ioctl touches the argument
++// only for IOCTL_KGSL_DRAWCTXT_CREATE on a KGSL device, which always carries
++// a pointer.
 +__attribute__((visibility("default"))) int ioctl(int fd, int request, ...) {
 +	va_list args;
 +	va_start(args, request);

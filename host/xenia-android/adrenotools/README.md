@@ -21,6 +21,26 @@ the two XenDroid files that use it) adds `ADRENOTOOLS_DRIVER_CONTEXT_PRIORITY`:
 - `adrenotools_context_priority_raised()` counts the contexts created that
   way, so the host can log that it worked.
 
+What the hook guarantees:
+
+- **Forwarding.** It forwards every call exactly as bionic's own `ioctl`
+  does: `libc/bionic/ioctl.cpp` reads one `void *` with `va_arg`
+  unconditionally and passes it to `__ioctl`. The hook adds no read that
+  bionic does not already make. It is arm64 only (adrenotools refuses other
+  ABIs), where the third argument travels in `x2` whether or not the caller
+  passed one.
+- **What it changes.** It touches the argument only for
+  `IOCTL_KGSL_DRAWCTXT_CREATE`, only on a file descriptor that is a KGSL
+  device node (`/dev/kgsl*`), and only while a priority is set. Every other
+  call passes through unchanged.
+- **Where it was validated.** It was validated with Turnip's KGSL backend
+  (`safe_ioctl(fd, request, arg)` always passes the third argument). With
+  other custom drivers it only ever changes a KGSL context creation.
+- **What it depends on.** It relies on the driver creating its KGSL context
+  inside `vkCreateDevice`, which Turnip does today. If a future driver created
+  contexts lazily, after the priority is reset, `contexts_raised` would read 0
+  and show it. Keep that counter in the log.
+
 XenDroid-ZeroFG sets priority 4 (the second of four levels: above the game,
 below the top level) around the `vkCreateDevice` of ZeroFG's device and resets
 it right after. The same `vkCreateDevice` also asks for

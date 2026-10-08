@@ -23,7 +23,11 @@ the two XenDroid files that use it) adds `ADRENOTOOLS_DRIVER_CONTEXT_PRIORITY`:
 
 XenDroid-ZeroFG sets priority 4 (the second of four levels: above the game,
 below the top level) around the `vkCreateDevice` of ZeroFG's device and resets
-it right after. Measured on an Adreno 840 (Snapdragon 8 Elite Gen 5) in Batman:
+it right after. The same `vkCreateDevice` also asks for
+`VK_QUEUE_GLOBAL_PRIORITY_HIGH` through `VK_KHR_global_priority` (or the EXT)
+when the driver offers it, and retries without it if the driver refuses: that
+covers drivers that honour the standard request, and the hook covers Turnip,
+which does not. The patch carries both changes to `vulkan_device.cc`. Measured on an Adreno 840 (Snapdragon 8 Elite Gen 5) in Batman:
 Arkham City with the GPU 95-99% busy: the copy to the screen went from 40-170
 ms to about 1 ms, presents stopped blocking, and every generated frame reached
 the screen, with the game at about 23 fps instead of 24-29 in the earlier,

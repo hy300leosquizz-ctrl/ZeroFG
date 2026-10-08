@@ -1,5 +1,5 @@
 diff --git a/emulator-core/src/main/cpp/xenia/src/xenia/ui/vulkan/vulkan_device.cc b/emulator-core/src/main/cpp/xenia/src/xenia/ui/vulkan/vulkan_device.cc
-index 41cb60310..62723ed69 100644
+index 41cb60310..3fa7985b5 100644
 --- a/emulator-core/src/main/cpp/xenia/src/xenia/ui/vulkan/vulkan_device.cc
 +++ b/emulator-core/src/main/cpp/xenia/src/xenia/ui/vulkan/vulkan_device.cc
 @@ -23,6 +23,9 @@
@@ -12,10 +12,76 @@ index 41cb60310..62723ed69 100644
  
  DEFINE_int32(
      vulkan_clamp_storage_buffer_range, 0,
-@@ -1535,8 +1538,30 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+@@ -445,6 +448,10 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+ 
+   std::vector<const char*> enabled_extensions;
+   bool zerofg_display_timing_available = false;
++  // Device B asks for a high queue priority through the driver as well
++  // (VK_KHR/EXT_global_priority), for drivers that honour it.
++  bool global_priority_khr = false;
++  bool global_priority_ext = false;
+   {
+     uint32_t supported_extension_count = 0;
+     const VkResult get_supported_extension_count_result =
+@@ -498,6 +505,15 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+                          VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME)) {
+           zerofg_display_timing_available = true;
+         }
++        if (presenter_device) {
++          const char* name = supported_extension.extensionName;
++          if (!std::strcmp(name, VK_KHR_GLOBAL_PRIORITY_EXTENSION_NAME)) {
++            global_priority_khr = true;
++          } else if (!std::strcmp(name,
++                                  VK_EXT_GLOBAL_PRIORITY_EXTENSION_NAME)) {
++            global_priority_ext = true;
++          }
++        }
+         const auto requested_extension_it =
+             requested_extensions.find(supported_extension.extensionName);
+         if (requested_extension_it == requested_extensions.cend()) {
+@@ -518,6 +534,11 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+            properties.deviceName);
+     return nullptr;
+   }
++  if (global_priority_khr) {
++    enabled_extensions.push_back(VK_KHR_GLOBAL_PRIORITY_EXTENSION_NAME);
++  } else if (global_priority_ext) {
++    enabled_extensions.push_back(VK_EXT_GLOBAL_PRIORITY_EXTENSION_NAME);
++  }
+ 
+   VkDeviceCreateInfo device_create_info = {
+       VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+@@ -1006,6 +1027,15 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+   }
+   const std::vector<float> queue_priorities(max_enabled_queues_per_family,
+                                             1.0f);
++  // Device B's work must not wait behind the game's on a saturated GPU: its
++  // queues ask the driver for a high global priority (the game stays at the
++  // default medium). Turnip's KGSL backend ignores it; the adrenotools hook
++  // below covers that driver.
++  const bool request_global_priority =
++      presenter_device && (global_priority_khr || global_priority_ext);
++  VkDeviceQueueGlobalPriorityCreateInfoKHR global_priority_info = {
++      VK_STRUCTURE_TYPE_DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO_KHR};
++  global_priority_info.globalPriority = VK_QUEUE_GLOBAL_PRIORITY_HIGH_KHR;
+   std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
+   for (size_t queue_family_index = 0;
+        queue_family_index < device->queue_families_.size();
+@@ -1018,7 +1048,8 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+     VkDeviceQueueCreateInfo& queue_create_info =
+         queue_create_infos.emplace_back();
+     queue_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+-    queue_create_info.pNext = nullptr;
++    queue_create_info.pNext =
++        request_global_priority ? &global_priority_info : nullptr;
+     queue_create_info.flags = 0;
+     queue_create_info.queueFamilyIndex = uint32_t(queue_family_index);
+     queue_create_info.queueCount = uint32_t(queue_family.queues.size());
+@@ -1535,8 +1566,50 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
  
    // Create the device.
  
+-  const VkResult device_create_result = ifn.vkCreateDevice(
 +#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
 +  // ZeroFG's device asks KGSL for a higher priority than the game's (KGSL's
 +  // default 8): on a saturated GPU its small work then runs first instead of
@@ -30,14 +96,34 @@ index 41cb60310..62723ed69 100644
 +    adrenotools_set_context_priority(kZeroFGKgslContextPriority);
 +  }
 +#endif
-   const VkResult device_create_result = ifn.vkCreateDevice(
++  VkResult device_create_result = ifn.vkCreateDevice(
        physical_device, &device_create_info, nullptr, &device->device_);
++  const char* global_priority_state =
++      request_global_priority ? "high" : "unsupported";
++  if (request_global_priority &&
++      (device_create_result == VK_ERROR_NOT_PERMITTED_KHR ||
++       device_create_result == VK_ERROR_INITIALIZATION_FAILED)) {
++    // A driver may refuse a high priority to an application: B at the
++    // default priority is still B.
++    global_priority_state = "refused";
++    for (VkDeviceQueueCreateInfo& queue_create_info : queue_create_infos) {
++      queue_create_info.pNext = nullptr;
++    }
++    device_create_result = ifn.vkCreateDevice(
++        physical_device, &device_create_info, nullptr, &device->device_);
++  }
 +#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
 +  if (presenter_device) {
 +    adrenotools_set_context_priority(0);
-+    XELOGI("ZeroFGDeviceB kgsl_priority requested={} contexts_raised={}",
-+           kZeroFGKgslContextPriority,
-+           adrenotools_context_priority_raised() - contexts_raised_before);
++    XELOGI(
++        "ZeroFGDeviceB vk_global_priority={} kgsl_priority requested={} "
++        "contexts_raised={}",
++        global_priority_state, kZeroFGKgslContextPriority,
++        adrenotools_context_priority_raised() - contexts_raised_before);
++  }
++#else
++  if (presenter_device) {
++    XELOGI("ZeroFGDeviceB vk_global_priority={}", global_priority_state);
 +  }
 +#endif
    if (device_create_result != VK_SUCCESS) {

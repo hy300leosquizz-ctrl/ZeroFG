@@ -119,6 +119,10 @@ it: a new motion estimator verified at full resolution, a temporal prior, an
 exposure model, a continuity guard, a new resolve, and the presenter, measured
 against ground truth in the laboratory and in play.
 
+## Contact
+
+Questions, integration help and collaboration: **fgzerofg@gmail.com**.
+
 ## Development and credits
 
 ZeroFG is developed through human–AI collaboration.

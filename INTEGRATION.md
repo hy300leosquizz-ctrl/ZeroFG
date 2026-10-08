@@ -162,6 +162,16 @@ XenDroid-ZeroFG:
   making the game wait.
 - **One output per display refresh.** Assign each output its own refresh, in
   order. Otherwise two outputs can land on the same refresh and one is lost.
+- **Give ZeroFG's work GPU priority.** When the game saturates the GPU, frame
+  generation that waits behind the game's frames completes in clumps, and no
+  pacing can make clumps smooth. Run ZeroFG on its own queue or device at a
+  higher priority than the game's (`VK_KHR_global_priority` where the driver
+  honours it). On Adreno with Turnip's KGSL backend the driver ignores it, but
+  the kernel does not: [host/xenia-android/adrenotools](host/xenia-android/adrenotools/)
+  sets the priority of the contexts the driver creates. In XenDroid-ZeroFG
+  this took a saturated Arkham City from frames in bursts (a copy of 8 ms
+  waiting 40 to 170 ms) to every generated frame on screen, evenly, with the
+  game a few frames per second slower.
 
 ## 7. Threading and teardown
 

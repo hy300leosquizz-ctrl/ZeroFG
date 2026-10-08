@@ -24,6 +24,7 @@ your host needs.
 | `vulkan_presenter_zerofg_source_adapter.inc` | Publishing each finished game frame to the presenter |
 | `zerofg_config.h` | The user setting: mode (off, zero, reallyzero) |
 | `zerofg_xenia_adapter.h/.cc` | The thin wrapper XenDroid uses around `zerofg::Interpolator` |
+| `adrenotools/kgsl-context-priority.patch` | GPU priority for ZeroFG's device on Adreno: the change to XenDroid's libadrenotools (a hook that sets the KGSL priority of the contexts a custom driver creates) and to `vulkan_device.cc`/`vulkan_instance.cc` that uses it ([README](adrenotools/README.md)) |
 | `xendroid_glue/vulkan_presenter_zerofg_glue.cc` | The other half: the callbacks inside XenDroid's own presenter that record a Generation, run the normal output pipeline on a frame (the Post) and hand the surface over |
 
 The rest of the integration lives inside XenDroid's own presenter
@@ -80,15 +81,19 @@ time.
 2. **Give ZeroFG its own Vulkan device** on the same GPU, with a queue that can
    present, Vulkan 1.3 and synchronization2. `vulkan_presenter_zerofg_device_context.inc`
    shows what XenDroid enables.
-3. **Replace the XenDroid types** in the table above with yours: the device
+3. **Give that device GPU priority** over the game's. On Adreno with a custom
+   Turnip driver, apply `adrenotools/kgsl-context-priority.patch` (or the same
+   idea in your driver loader); elsewhere use `VK_KHR_global_priority` if the
+   driver honours it.
+4. **Replace the XenDroid types** in the table above with yours: the device
    wrapper, the output settings, the frame timestamps, the logger and the
    settings.
-4. **Publish your frames**: call `PublicationCommitted` when a game frame is
+5. **Publish your frames**: call `PublicationCommitted` when a game frame is
    finished, and answer `IngressSourceAcquireCallback` with it.
-5. **Implement the callbacks** following `xendroid_glue/`: a Generation records
+6. **Implement the callbacks** following `xendroid_glue/`: a Generation records
    `zerofg::Interpolator::Interpolate` and submits it; a Post runs your own
    output pipeline.
-6. **Hand the screen over** with `Connect` and the surface methods, so your
+7. **Hand the screen over** with `Connect` and the surface methods, so your
    presenter and ZeroFG never present at the same time.
 
 Making this semi-automatic (the presenter behind a small host interface, so it
@@ -115,5 +120,6 @@ These took most of the two months, and each has a measured reason behind it:
 Apache-2.0, like the rest of this repository, with two exceptions that keep
 Xenia's BSD 3-Clause license ([LICENSE-Xenia](LICENSE-Xenia)):
 `vulkan_presenter_zerofg_device_context.inc`, adapted from Xenia's presenter, and
-`xendroid_glue/vulkan_presenter_zerofg_glue.cc`, an excerpt of it. The XenDroid
-and Xenia files it depends on keep their own licenses.
+`xendroid_glue/vulkan_presenter_zerofg_glue.cc`, an excerpt of it. The
+adrenotools patch changes libadrenotools, which keeps its BSD 2-Clause license.
+The XenDroid and Xenia files it depends on keep their own licenses.

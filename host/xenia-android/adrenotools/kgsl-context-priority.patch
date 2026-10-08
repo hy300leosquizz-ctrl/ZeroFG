@@ -1,0 +1,263 @@
+diff --git a/emulator-core/src/main/cpp/xenia/src/xenia/ui/vulkan/vulkan_device.cc b/emulator-core/src/main/cpp/xenia/src/xenia/ui/vulkan/vulkan_device.cc
+index 41cb60310..62723ed69 100644
+--- a/emulator-core/src/main/cpp/xenia/src/xenia/ui/vulkan/vulkan_device.cc
++++ b/emulator-core/src/main/cpp/xenia/src/xenia/ui/vulkan/vulkan_device.cc
+@@ -23,6 +23,9 @@
+ #include <unordered_map>
+ #include <vector>
+ 
++#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
++#include "third_party/libadrenotools/include/adrenotools/driver.h"
++#endif
+ 
+ DEFINE_int32(
+     vulkan_clamp_storage_buffer_range, 0,
+@@ -1535,8 +1538,30 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
+ 
+   // Create the device.
+ 
++#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
++  // ZeroFG's device asks KGSL for a higher priority than the game's (KGSL's
++  // default 8): on a saturated GPU its small work then runs first instead of
++  // waiting behind the game's frames and completing in clumps (a copy of 8 ms
++  // took 40-170 ms, Arkham GT off, 2026-10-07). Turnip creates its KGSL draw
++  // context without one, so the adrenotools hook sets it during this call.
++  // 4 is the second of the four levels: above the game, below the top level.
++  constexpr uint32_t kZeroFGKgslContextPriority = 4;
++  const uint32_t contexts_raised_before =
++      presenter_device ? adrenotools_context_priority_raised() : 0;
++  if (presenter_device) {
++    adrenotools_set_context_priority(kZeroFGKgslContextPriority);
++  }
++#endif
+   const VkResult device_create_result = ifn.vkCreateDevice(
+       physical_device, &device_create_info, nullptr, &device->device_);
++#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
++  if (presenter_device) {
++    adrenotools_set_context_priority(0);
++    XELOGI("ZeroFGDeviceB kgsl_priority requested={} contexts_raised={}",
++           kZeroFGKgslContextPriority,
++           adrenotools_context_priority_raised() - contexts_raised_before);
++  }
++#endif
+   if (device_create_result != VK_SUCCESS) {
+     XELOGE(
+         "Failed to create a Vulkan logical device from the physical device "
+diff --git a/emulator-core/src/main/cpp/xenia/src/xenia/ui/vulkan/vulkan_instance.cc b/emulator-core/src/main/cpp/xenia/src/xenia/ui/vulkan/vulkan_instance.cc
+index 2265abbb4..a00f97022 100644
+--- a/emulator-core/src/main/cpp/xenia/src/xenia/ui/vulkan/vulkan_instance.cc
++++ b/emulator-core/src/main/cpp/xenia/src/xenia/ui/vulkan/vulkan_instance.cc
+@@ -245,7 +245,10 @@ std::unique_ptr<VulkanInstance> VulkanInstance::Create(
+ 
+         XELOGI("Loading custom Vulkan driver: {}", custom_lib_path);
+ 
+-        vulkan_instance->loader_= adrenotools_open_libvulkan(RTLD_NOW,ADRENOTOOLS_DRIVER_CUSTOM,nullptr
++        // CONTEXT_PRIORITY: ZeroFG's device asks KGSL for a higher priority
++        // than the game's (VulkanDevice::CreateIfSupported).
++        vulkan_instance->loader_= adrenotools_open_libvulkan(RTLD_NOW,
++                ADRENOTOOLS_DRIVER_CUSTOM | ADRENOTOOLS_DRIVER_CONTEXT_PRIORITY,nullptr
+                 ,hook_dir.c_str()
+                 ,custom_lib_dir.c_str()
+                 ,custom_lib_name.c_str()
+diff --git a/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/include/adrenotools/driver.h b/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/include/adrenotools/driver.h
+index f81e8fe34..0d7530731 100644
+--- a/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/include/adrenotools/driver.h
++++ b/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/include/adrenotools/driver.h
+@@ -30,6 +30,17 @@ extern "C" {
+  */
+ void *adrenotools_open_libvulkan(int dlopenMode, int featureFlags, const char *tmpLibDir, const char *hookLibDir, const char *customDriverDir, const char *customDriverName, const char *fileRedirectDir, void **userMappingHandle);
+ 
++/**
++ * @brief Sets the KGSL priority of the draw contexts the driver creates from now on (a vkCreateDevice creates one per queue). Only used if ADRENOTOOLS_DRIVER_CONTEXT_PRIORITY was set in `featureFlags`
++ * @param priority 1 (highest) to 15 (lowest); 0 leaves the driver's own (KGSL's default is 8). KGSL runs the contexts of a higher level first and preempts lower ones for them
++ */
++void adrenotools_set_context_priority(uint32_t priority);
++
++/**
++ * @return How many draw contexts were created with a priority set through adrenotools_set_context_priority
++ */
++uint32_t adrenotools_context_priority_raised();
++
+ /**
+  * @brief Imports the given CPU mapped memory range into the GSL allocator. This should then be followed by a call to vkAllocateMemory with a matching size which will return a VkDeviceMemory view over the input region
+  * @param handle Mapping handle that was returned by adrenotools_open_libvulkan
+diff --git a/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/include/adrenotools/priv.h b/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/include/adrenotools/priv.h
+index 742d24f24..cb0028e7a 100644
+--- a/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/include/adrenotools/priv.h
++++ b/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/include/adrenotools/priv.h
+@@ -12,6 +12,7 @@ enum {
+     ADRENOTOOLS_DRIVER_CUSTOM = 1 << 0,
+     ADRENOTOOLS_DRIVER_FILE_REDIRECT = 1 << 1,
+     ADRENOTOOLS_DRIVER_GPU_MAPPING_IMPORT = 1 << 2,
++    ADRENOTOOLS_DRIVER_CONTEXT_PRIORITY = 1 << 3, //!< KGSL draw contexts take the priority set with adrenotools_set_context_priority
+ };
+ 
+ #define ADRENOTOOLS_GPU_MAPPING_SUCCEEDED_MAGIC 0xDEADBEEF
+diff --git a/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/driver.cpp b/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/driver.cpp
+index 4ddee4aaa..7fe4e09cd 100644
+--- a/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/driver.cpp
++++ b/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/driver.cpp
+@@ -16,6 +16,12 @@
+ #include <adrenotools/driver.h>
+ #include <unistd.h>
+ 
++namespace {
++// Shared with the hooks through HookImplParams (ADRENOTOOLS_DRIVER_CONTEXT_PRIORITY).
++std::atomic<uint32_t> contextPriority{0};
++std::atomic<uint32_t> contextsRaised{0};
++}
++
+ void *adrenotools_open_libvulkan(int dlopenFlags, int featureFlags, const char *tmpLibDir, const char *hookLibDir, const char *customDriverDir, const char *customDriverName, const char *fileRedirectDir, void **userMappingHandle) {
+     // Bail out if linkernsbypass failed to load, this probably means we're on api < 28
+     if (!linkernsbypass_load_status())
+@@ -84,7 +90,8 @@ void *adrenotools_open_libvulkan(int dlopenFlags, int featureFlags, const char *
+         }
+     }()};
+ 
+-    initHookParam(new HookImplParams(featureFlags, tmpLibDir, hookLibDir, customDriverDir, customDriverName, fileRedirectDir, importMapping));
++    initHookParam(new HookImplParams(featureFlags, tmpLibDir, hookLibDir, customDriverDir, customDriverName, fileRedirectDir, importMapping,
++                                     &contextPriority, &contextsRaised));
+ 
+     // Load the libvulkan hook into the isolated namespace
+     if (!linkernsbypass_namespace_dlopen("libmain_hook.so", RTLD_GLOBAL, hookNs))
+@@ -93,6 +100,14 @@ void *adrenotools_open_libvulkan(int dlopenFlags, int featureFlags, const char *
+     return linkernsbypass_namespace_dlopen_unique("/system/lib64/libvulkan.so", tmpLibDir, dlopenFlags, hookNs);
+ }
+ 
++void adrenotools_set_context_priority(uint32_t priority) {
++    contextPriority.store(priority, std::memory_order_release);
++}
++
++uint32_t adrenotools_context_priority_raised() {
++    return contextsRaised.load(std::memory_order_acquire);
++}
++
+ bool adrenotools_import_user_mem(void *handle, void *hostPtr, uint64_t size) {
+     auto importMapping{reinterpret_cast<adrenotools_gpu_mapping *>(handle)};
+ 
+diff --git a/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/CMakeLists.txt b/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/CMakeLists.txt
+index ebff0639d..870a58ed8 100644
+--- a/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/CMakeLists.txt
++++ b/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/CMakeLists.txt
+@@ -25,3 +25,10 @@ target_compile_options(gsl_alloc_hook PRIVATE -Wall -Wextra)
+ target_link_options(gsl_alloc_hook PRIVATE -z global)
+ target_link_libraries(gsl_alloc_hook hook_impl)
+ set_target_properties(gsl_alloc_hook PROPERTIES CXX_VISIBILITY_PRESET hidden)
++
++add_library(kgsl_priority_hook SHARED kgsl_priority_hook.c)
++
++target_compile_options(kgsl_priority_hook PRIVATE -Wall -Wextra)
++target_link_options(kgsl_priority_hook PRIVATE -z global)
++target_link_libraries(kgsl_priority_hook hook_impl)
++set_target_properties(kgsl_priority_hook PROPERTIES CXX_VISIBILITY_PRESET hidden)
+diff --git a/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/hook_impl.cpp b/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/hook_impl.cpp
+index 50e79a946..3d0af8d05 100644
+--- a/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/hook_impl.cpp
++++ b/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/hook_impl.cpp
+@@ -86,6 +86,14 @@ __attribute__((visibility("default"))) void *hook_android_dlopen_ext(const char
+         LOGI("hook_android_dlopen_ext: applied libfile_redirect_hook");
+     }
+ 
++    if (hook_params->featureFlags & ADRENOTOOLS_DRIVER_CONTEXT_PRIORITY) {
++        // Not fatal: without it the driver's contexts keep its own priority
++        if (linkernsbypass_namespace_dlopen("libkgsl_priority_hook.so", RTLD_GLOBAL, driverNs))
++            LOGI("hook_android_dlopen_ext: applied libkgsl_priority_hook");
++        else
++            LOGI("hook_android_dlopen_ext: failed to apply libkgsl_priority_hook!");
++    }
++
+     // Use our new namespace to load the vulkan driver
+     auto newExtinfo{*extinfo};
+     newExtinfo.library_namespace = driverNs;
+@@ -169,6 +177,26 @@ __attribute__((visibility("default"))) FILE *hook_fopen(const char *filename, co
+     return fopen(replacement.c_str(), mode);
+ }
+ 
++// Every ioctl the driver makes passes here; only a draw context's creation is
++// changed, and only while a priority is set: its KGSL priority field.
++__attribute__((visibility("default"))) int hook_ioctl(int fd, int request, void *arg) {
++    if (static_cast<uint32_t>(request) == static_cast<uint32_t>(IOCTL_KGSL_DRAWCTXT_CREATE) && arg &&
++        hook_params && hook_params->contextPriority) {
++        uint32_t priority{hook_params->contextPriority->load(std::memory_order_acquire)};
++        if (priority) {
++            auto create{reinterpret_cast<kgsl_drawctxt_create *>(arg)};
++            create->flags = (create->flags & ~KGSL_CONTEXT_PRIORITY_MASK) |
++                            ((priority << KGSL_CONTEXT_PRIORITY_SHIFT) & KGSL_CONTEXT_PRIORITY_MASK);
++            int ret{ioctl(fd, request, arg)};
++            if (!ret && hook_params->contextsRaised)
++                hook_params->contextsRaised->fetch_add(1, std::memory_order_acq_rel);
++            LOGI("hook_ioctl: draw context %u created at KGSL priority %u (ret %d)", create->drawctxt_id, priority, ret);
++            return ret;
++        }
++    }
++    return ioctl(fd, request, arg);
++}
++
+ static constexpr uintptr_t GslMemDescImportedPrivMagic{0xdeadb33f};
+ struct GslMemDesc {
+     void *hostptr;
+diff --git a/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/hook_impl.h b/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/hook_impl.h
+index 2ce2471e1..0bd04ed4e 100644
+--- a/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/hook_impl.h
++++ b/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/hook_impl.h
+@@ -24,6 +24,8 @@ int hook_gsl_memory_alloc_pure_64(uint64_t size, uint32_t flags, void *memDesc);
+ 
+ int hook_gsl_memory_free_pure(void *memDesc);
+ 
++int hook_ioctl(int fd, int request, void *arg);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/hook_impl_params.h b/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/hook_impl_params.h
+index 8a3bd1673..5dae8992a 100644
+--- a/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/hook_impl_params.h
++++ b/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/hook_impl_params.h
+@@ -3,6 +3,7 @@
+ 
+ #pragma once
+ 
++#include <atomic>
+ #include <string>
+ #include <adrenotools/priv.h>
+ 
+@@ -18,14 +19,19 @@ struct HookImplParams {
+     std::string customDriverName;
+     std::string fileRedirectDir;
+     adrenotools_gpu_mapping *nextGpuMapping;
++    std::atomic<uint32_t> *contextPriority; //!< KGSL priority for draw contexts created now (0: the driver's own)
++    std::atomic<uint32_t> *contextsRaised; //!< Draw contexts created with such a priority
+ 
+     HookImplParams(int featureFlags, const char *tmpLibDir, const char *hookLibDir, const char *customDriverDir,
+-                  const char *customDriverName, const char *fileRedirectDir, adrenotools_gpu_mapping *nextGpuMapping)
++                  const char *customDriverName, const char *fileRedirectDir, adrenotools_gpu_mapping *nextGpuMapping,
++                  std::atomic<uint32_t> *contextPriority = nullptr, std::atomic<uint32_t> *contextsRaised = nullptr)
+         : featureFlags(featureFlags),
+           tmpLibDir(tmpLibDir ? tmpLibDir : ""),
+           hookLibDir(hookLibDir),
+           customDriverDir(customDriverDir ? customDriverDir : ""),
+           customDriverName(customDriverName ? customDriverName : ""),
+           fileRedirectDir(fileRedirectDir ? fileRedirectDir : ""),
+-          nextGpuMapping(nextGpuMapping) {}
++          nextGpuMapping(nextGpuMapping),
++          contextPriority(contextPriority),
++          contextsRaised(contextsRaised) {}
+ };
+diff --git a/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/kgsl_priority_hook.c b/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/kgsl_priority_hook.c
+new file mode 100644
+index 000000000..3b80e924a
+--- /dev/null
++++ b/emulator-core/src/main/cpp/xenia/third_party/libadrenotools/src/hook/kgsl_priority_hook.c
+@@ -0,0 +1,12 @@
++#include <stdarg.h>
++#include "hook_impl.h"
++
++// Loaded global into the driver's namespace: the driver's ioctl calls land
++// here. Every KGSL ioctl takes one pointer argument.
++__attribute__((visibility("default"))) int ioctl(int fd, int request, ...) {
++	va_list args;
++	va_start(args, request);
++	void *arg = va_arg(args, void *);
++	va_end(args);
++	return hook_ioctl(fd, request, arg);
++}

@@ -1,78 +1,141 @@
 # ZeroFG
 
-> Open-source, platform-agnostic Vulkan frame generation engine focused on mobile implementations.
+> Frame generation for mobile GPUs, built on Vulkan. **Version 1.0.**
 
-**Status: Experimental — Functional V1 Proof of Concept**
+ZeroFG takes two frames a game rendered and creates the one halfway between
+them. Shown in between, those frames double the frame rate: 60 fps becomes
+120, 30 becomes 60.
 
-ZeroFG is a standalone Vulkan frame-generation engine. This repository preserves the first functional public implementation as a focused V1 source snapshot, independent of XenDroid.
+This repository has everything we built to make that work on a phone:
 
-The host supplies Vulkan resources and a command buffer. ZeroFG records interpolation work into that command buffer; queue submission, swapchain ownership, presentation, synchronization, and frame pacing remain host responsibilities. V1 targets a single synthetic midpoint (`phase = 0.5`) for use in a 2× integration path.
+- **the engine** (`include/`, `src/`, `shaders/`): records the GPU work that
+  generates a frame into a command buffer you give it. It owns no queue and no
+  timing, so it fits into any Vulkan host;
+- **the presenter** (`host/xenia-android/`): the part that turns the engine
+  into frame generation on a real device. It captures the game's frames,
+  paces generation, keeps real frames in order and presents on the screen
+  without ever slowing the game. This is where most of the work went;
+- **the integration notes** ([INTEGRATION.md](INTEGRATION.md)): how to bring
+  ZeroFG into your own host, step by step.
 
-The implementation was validated at runtime through [XenDroid-ZeroFG](https://github.com/hy300leosquizz-ctrl/XenDroid-ZeroFG), the reference integration and functional proof of concept. This standalone snapshot does not yet have an independently validated build system.
+ZeroFG was born inside [XenDroid-ZeroFG](https://github.com/hy300leosquizz-ctrl/XenDroid-ZeroFG),
+an Xbox 360 emulator for Android, where it runs in play at 120 frames per
+second. It was built there, not for there: the engine has no idea it is inside
+an emulator.
 
-## V1 pipeline
+## Two modes
 
-The V1 pipeline is intentionally small:
+| Mode | What it is | GPU time per frame, 1280 x 720 |
+| --- | --- | --- |
+| `Mode::kZero` | The full engine: the best image | Adreno 840: 2.2 ms · Adreno 650: 7.2 ms |
+| `Mode::kReallyZero` | The same engine with half the fine passes, for weaker GPUs | Adreno 840: 1.7 ms · Adreno 650: 5.4 ms |
 
-```text
-previous + current
-        ↓
-       luma
-        ↓
-  block motion
-        ↓
-    confidence
-        ↓
-midpoint warp/blend
-        ↓
- synthetic frame
+The times are laboratory measurements of the generation alone, on a fixed
+workload. ReallyZero stays within about 0.2 dB of Zero on our real-content
+measurement streams (fast synthetic motion loses more).
+
+## How the engine works
+
+For every pair of frames A and B, ZeroFG:
+
+1. works out the exposure change between them (gain, bias, correlation), so
+   fades and flashes are not mistaken for motion;
+2. estimates motion on a 20-pixel cell grid, coarse to fine, and tests a few
+   global camera hypotheses;
+3. verifies every cell at full resolution with four propagation passes (two in
+   ReallyZero), starting from the previous pair's motion;
+4. guards continuity: a vector that would tear the scene apart, or that the
+   evidence does not support, falls back to a safe blend;
+5. resolves the midpoint frame, warping both sources by how much it trusts
+   them and rebuilding the final colour with a sharp kernel.
+
+HUDs, text and static overlays stay where they belong instead of smearing with
+the world behind them.
+
+## Requirements
+
+- A Vulkan 1.3 device with `synchronization2` and
+  `shaderStorageImageExtendedFormats` enabled.
+- `R8_UNORM` storage images, `A2B10G10R10_UNORM_PACK32` storage images that can
+  be blitted from, and an input format that can be sampled with linear filtering.
+- A picture size the 64-cell grid divides exactly (1280 x 720 and 1920 x 1080
+  both work). Other sizes are refused, never run in a weaker mode.
+
+Optional features the device has enabled make it faster (half-precision
+colour, 64-wide subgroups, cubic filtering). Every backend gives the same
+logical result.
+
+## Building the engine
+
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
 ```
 
-It estimates limited block motion between the previous and current images, derives a confidence value, and synthesizes the midpoint by warping and blending samples. This is a functional experiment, not a claim of production-quality interpolation.
+This builds the static library `zerofg` (alias `zerofg::zerofg`). You need
+Python 3, plus `glslangValidator` and `spirv-opt` from the Vulkan SDK (set
+`VULKAN_SDK`, or put both on `PATH`). The Vulkan headers come from
+`find_package(Vulkan)`, or from `-DZEROFG_VULKAN_HEADERS_DIR=<dir>`; with the
+Android NDK toolchain, the NDK's own headers are used. The library never links
+a Vulkan loader: every entry point comes from the `vkGetInstanceProcAddr` you
+pass in.
 
-## Integration contract
+```cmake
+add_subdirectory(third_party/ZeroFG)
+target_link_libraries(my_host PRIVATE zerofg::zerofg)
+```
 
-ZeroFG owns the interpolation resources and commands needed by its engine path. The integrating host remains responsible for:
+Or let CMake fetch it:
 
-- providing compatible Vulkan images and image views;
-- providing the command buffer in which ZeroFG records work;
-- resource state and synchronization outside the engine contract;
-- queue submission, swapchain management, presentation, and frame pacing.
+```cmake
+include(FetchContent)
+FetchContent_Declare(zerofg
+  GIT_REPOSITORY https://github.com/hy300leosquizz-ctrl/ZeroFG.git
+  GIT_TAG v1.0.0)
+FetchContent_MakeAvailable(zerofg)
+target_link_libraries(my_host PRIVATE zerofg::zerofg)
+```
 
-The public API is in `include/zerofg/zerofg.h`. The implementation and embedded SPIR-V headers are in `src/`, while the corresponding GLSL and checkpoint SPIR-V files are preserved in `shaders/`.
+Built and checked on Windows (clang, llvm-mingw) and Android (NDK r29,
+arm64-v8a). The presenter in `host/` is a reference: it builds inside
+XenDroid-ZeroFG, and its README lists what it needs from there.
 
-## Known limitations
+ZeroFG has been runtime-validated in games on one device (Adreno 840); the
+Adreno 650 is additionally qualified in the laboratory.
 
-V1 is a functional proof of concept, not a usable gameplay product. Its known limitations include:
+## By the numbers
 
-- severe ghosting and smearing;
-- a limited motion-search range and simple block estimator;
-- poor disocclusion handling;
-- visible edge and motion artifacts;
-- significant GPU overhead for the resulting quality;
-- image quality unsuitable for normal gameplay.
+Two months, August to October 2026: 736 commits, more than 137,000 lines
+written and 64,000 rewritten away, about 64,000 lines of original code (the
+engines from RC1 to Zero, the presenter, and a laboratory that tests the engine
+against ground truth) and 34,000 lines of engineering notes.
 
-The public build exists to demonstrate that the V1 frame-generation path produced real synthetic frames, not to offer a practical enhancement.
+## From V1 to 1.0
 
-## Reference V1 POC build
-
-The [ZeroFG V1 Functional POC — Experimental](https://github.com/hy300leosquizz-ctrl/XenDroid-ZeroFG/releases/tag/v1-poc) release contains the reference XenDroid integration APK. It is a demonstration artifact and is not intended for daily use or normal gameplay.
-
-## Building
-
-No standalone build is claimed or documented yet. The historical in-tree CMake target depended on the XenDroid/Xenia source tree and was deliberately not promoted here. The validated integration is maintained in [XenDroid-ZeroFG](https://github.com/hy300leosquizz-ctrl/XenDroid-ZeroFG).
+V1 (August 2026) was the first engine that worked: block motion, a confidence
+value and a blend. It produced real frames and strong ghosting, and it had no
+presenter at all. It stays in this repository's history. 1.0 replaces all of
+it: a new motion estimator verified at full resolution, a temporal prior, an
+exposure model, a continuity guard, a new resolve, and the presenter, measured
+against ground truth in the laboratory and in play.
 
 ## Development and credits
 
 ZeroFG is developed through human–AI collaboration.
 
-- **hy300leosquizz** ([`hy300leosquizz-ctrl`](https://github.com/hy300leosquizz-ctrl)) — creator and project maintainer; responsible for engineering direction, integration, device and runtime testing, and final technical decisions.
-- **Zeromeia** — the project name for an AI development collaborator powered by ChatGPT by OpenAI. Zeromeia is used extensively across the development pipeline, including architecture, technical and runtime analysis, algorithm and experiment design, code-generation guidance, Codex task design, code review, debugging, log analysis, documentation, repository organization, and release preparation.
+- **hy300leosquizz** ([`hy300leosquizz-ctrl`](https://github.com/hy300leosquizz-ctrl)) — creator and maintainer. Lawyer by trade, Formula 1 podcast presenter by passion, and software architect by sheer determination and curiosity, developing latent talents after asking himself whether he could modify a few features in emulators and falling down the rabbit hole for months: he drew the architecture, set the direction, had an instinct trust rate of 98%, became an expert in Vulkan and in frame generation features and capabilities, made every final call, and ran every test on his own phones, usually a hot one.
+- **Zeromeia** — the project name for an AI development collaborator powered by ChatGPT by OpenAI: architecture, runtime and log analysis, experiment design, code review, documentation and release preparation.
+- **Zé Raio** — the project name for an AI development collaborator powered by Claude by Anthropic: implementation, the measurement laboratory, log analysis, documentation and release preparation.
 
-AI-generated analysis, designs, code suggestions, and documentation are treated as engineering inputs. Final project decisions, device testing, validation, and publication remain under the control of the human maintainer. The name Zeromeia describes the project's use of ChatGPT and does not imply sponsorship or endorsement by OpenAI, legal personhood, copyright ownership, or independent publication authority.
+AI-generated analysis, designs, code and documentation are engineering inputs. Final decisions, device testing, validation and publication stay with the human maintainer. The names Zeromeia and Zé Raio describe the project's use of ChatGPT and Claude and do not imply sponsorship or endorsement by OpenAI or Anthropic.
 
-## Licensing
+## License
 
-Unless otherwise noted, the ZeroFG-specific contents of this repository are licensed under the **Apache License, Version 2.0** (`Apache-2.0`). See [`LICENSE`](LICENSE).
+Licensed under the **Apache License, Version 2.0** (`Apache-2.0`). See
+[`LICENSE`](LICENSE).
 
-The license is applied without modifying the published V1 engine snapshot: the 13 V1 source/shader files remain byte-for-byte identical to the historical checkpoint used for this standalone extraction. Any third-party material added in the future remains subject to its own license and must be identified separately.
+Two reference files in `host/xenia-android/` come from Xenia and keep its BSD
+3-Clause license ([`LICENSE-Xenia`](host/xenia-android/LICENSE-Xenia)):
+`vulkan_presenter_zerofg_device_context.inc` (adapted from Xenia's presenter)
+and `xendroid_glue/vulkan_presenter_zerofg_glue.cc` (an excerpt of it). A
+provenance check found no code shared with Xenia or XenDroid in any other file.

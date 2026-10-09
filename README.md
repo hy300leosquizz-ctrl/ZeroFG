@@ -1,6 +1,6 @@
 # ZeroFG
 
-> Frame generation for mobile GPUs, built on Vulkan. **Version 1.0.1.**
+> Frame generation for mobile GPUs, built on Vulkan. **Version 1.0.2.**
 
 ZeroFG takes two frames a game rendered and creates the one halfway between
 them. Shown in between, those frames double the frame rate: 60 fps becomes
@@ -91,7 +91,7 @@ Or let CMake fetch it:
 include(FetchContent)
 FetchContent_Declare(zerofg
   GIT_REPOSITORY https://github.com/hy300leosquizz-ctrl/ZeroFG.git
-  GIT_TAG v1.0.1)
+  GIT_TAG v1.0.2)
 FetchContent_MakeAvailable(zerofg)
 target_link_libraries(my_host PRIVATE zerofg::zerofg)
 ```
@@ -118,6 +118,24 @@ presenter at all. It stays in this repository's history. 1.0 replaces all of
 it: a new motion estimator verified at full resolution, a temporal prior, an
 exposure model, a continuity guard, a new resolve, and the presenter, measured
 against ground truth in the laboratory and in play.
+
+## What's new in 1.0.2
+
+The engine is unchanged; this release is the reference host's pacing
+([details](host/xenia-android/README.md#what-changed-in-102)):
+
+- **The output follows the game's real rate.** The presenter's clock follows
+  the average of the game's last frames, measured without the time the game
+  spent waiting on ZeroFG, and runs a little faster while frames sit deeper
+  than needed. A game that alternates 33 and 50 ms frames used to leave the
+  clock stuck, with about half a second of delay in Arkham City.
+- **Fewer stutters when the frame rate changes.** When the clock changes pace,
+  the new timing starts where the next real frame can actually go, instead of
+  leaving a slot nothing fills.
+- **Guest pacing in the emulator host**: a late game frame gets its vblank at
+  once, and a game frame rate cap gives a GPU-bound game's frame generation
+  room to work (Modern Warfare 3 at 40: the same ~80 fps on screen, 70 -> 55 ms
+  of lag). A patch to XenDroid's GPU code, in `host/xenia-android/xendroid_glue/`.
 
 ## What's new in 1.0.1
 

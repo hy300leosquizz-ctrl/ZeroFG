@@ -1,0 +1,526 @@
+diff --git a/emulator-core/src/main/cpp/xenia/src/xenia/gpu/command_processor.cc b/emulator-core/src/main/cpp/xenia/src/xenia/gpu/command_processor.cc
+index af27e7548..a20a5901e 100644
+--- a/emulator-core/src/main/cpp/xenia/src/xenia/gpu/command_processor.cc
++++ b/emulator-core/src/main/cpp/xenia/src/xenia/gpu/command_processor.cc
+@@ -591,6 +591,135 @@ void CommandProcessor::FrameStatsEndSwap(uint64_t begin_ns) {
+   }
+ }
+ 
++uint64_t CommandProcessor::VblankProbeNowNs() {
++  return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                      std::chrono::steady_clock::now().time_since_epoch())
++                      .count());
++}
++
++void CommandProcessor::VblankProbeWait(uint32_t address, bool is_memory,
++                                       uint64_t begin_ns, uint32_t wait_info,
++                                       uint32_t ref, uint32_t mask,
++                                       uint32_t begin_value,
++                                       uint32_t end_raw_value,
++                                       uint32_t begin_counter, bool pulled) {
++  VblankProbe& p = vblank_probe_;
++  const uint64_t now = VblankProbeNowNs();
++  const uint64_t wait_ns = now > begin_ns ? now - begin_ns : 0;
++  if (pulled) {
++    ++p.pulls;
++    if (wait_ns < 3000000) {
++      ++p.pull_released;
++    }
++  }
++  if (wait_ns <= p.longest_wait_ns) {
++    return;
++  }
++  const uint64_t last_vblank_ns =
++      vblank_probe_last_vblank_ns_.load(std::memory_order_relaxed);
++  p.longest_wait_ns = wait_ns;
++  p.longest_release_ns = now;
++  p.longest_release_after_vblank_ns =
++      last_vblank_ns && now > last_vblank_ns ? now - last_vblank_ns : 0;
++  p.longest_address = address;
++  p.longest_memory = is_memory;
++  p.longest_function = wait_info & 7;
++  p.longest_ref = ref;
++  p.longest_mask = mask;
++  p.longest_begin_value = begin_value;
++  p.longest_end_raw_value = end_raw_value;
++  p.longest_begin_counter = begin_counter;
++}
++
++bool CommandProcessor::VblankPullDue(uint32_t address, bool is_memory) const {
++  if (!guest_vblank_pull_enabled_ || !GuestPacingLive() || !is_memory ||
++      !vblank_flip_address_ ||
++      address != vblank_flip_address_ || !vblank_probe_.previous_swap_ns) {
++    return false;
++  }
++  const uint64_t period_ns = 1000000000ull / GetGuestVblankRateHz();
++  const uint64_t now = VblankProbeNowNs();
++  const uint64_t since_swap_ns = now > vblank_probe_.previous_swap_ns
++                                     ? now - vblank_probe_.previous_swap_ns
++                                     : 0;
++  // Late for 30 fps (half a millisecond of tolerance for the clocks), or for
++  // the frame rate limit when one is set.
++  const uint64_t due_ns = guest_fps_limit_ns_ ? guest_fps_limit_ns_
++                                              : 2 * period_ns;
++  return since_swap_ns + 500000 >= due_ns;
++}
++
++void CommandProcessor::ApplyGuestFpsLimitBeforeSwap() {
++  if (!guest_fps_limit_ns_ || !GuestPacingLive() ||
++      !vblank_probe_.previous_swap_ns) {
++    return;
++  }
++  // A minimum interval, not a grid: a late frame never buys an early one.
++  const uint64_t due_ns =
++      vblank_probe_.previous_swap_ns + guest_fps_limit_ns_ - 200000;
++  const uint64_t now = VblankProbeNowNs();
++  if (now < due_ns) {
++    xe::threading::NanoSleepPrecise(due_ns - now);
++  }
++}
++
++void CommandProcessor::VblankProbeSwap() {
++  VblankProbe& p = vblank_probe_;
++  const uint64_t now = VblankProbeNowNs();
++  const uint32_t counter = counter_;
++  if (p.previous_swap_ns) {
++    const uint32_t i = p.swaps++;
++    const uint32_t vblanks = counter - p.previous_swap_counter;
++    const size_t bucket = std::min<uint32_t>(vblanks, 4);
++    ++p.vblanks_between[bucket];
++    p.interval_us[i] = (now - p.previous_swap_ns) / 1000;
++    p.wait_us[i] = p.longest_wait_ns / 1000;
++    p.wait_us_by_vblanks[bucket] += p.longest_wait_ns / 1000;
++    if (p.longest_wait_ns >= 1000000) {
++      // A wait of a millisecond or more votes for its address as the flip
++      // flag.
++      ++p.waited;
++      const uint32_t r = p.release_samples++;
++      p.release_after_vblank_us[r] = p.longest_release_after_vblank_ns / 1000;
++      p.swap_after_release_us[r] = (now - p.longest_release_ns) / 1000;
++      if (p.longest_release_after_vblank_ns < 2000000) {
++        ++p.released_by_vblank;
++      }
++      if (!p.address_votes) {
++        p.address = p.longest_address;
++        p.address_memory = p.longest_memory;
++        p.address_votes = 1;
++      } else if (p.address == p.longest_address) {
++        ++p.address_votes;
++      } else {
++        --p.address_votes;
++      }
++    }
++  }
++  p.previous_swap_ns = now;
++  p.previous_swap_counter = counter;
++  p.longest_wait_ns = 0;
++  p.longest_release_ns = 0;
++  p.longest_release_after_vblank_ns = 0;
++  if (p.swaps < VblankProbe::kWindow) {
++    return;
++  }
++  // The flip flag: one memory address was the longest wait before most of
++  // the window's swaps.
++  if (p.address_memory && p.address_votes >= VblankProbe::kWindow * 2 / 3 &&
++      vblank_flip_address_ != p.address) {
++    vblank_flip_address_ = p.address;
++    XELOGI("VblankProbe flip_address={:08X} pull={} fps_limit_us={}",
++           vblank_flip_address_, guest_vblank_pull_enabled_,
++           guest_fps_limit_ns_ / 1000);
++  }
++  const uint64_t previous_swap_ns = p.previous_swap_ns;
++  const uint32_t previous_swap_counter = p.previous_swap_counter;
++  p = VblankProbe();
++  p.previous_swap_ns = previous_swap_ns;
++  p.previous_swap_counter = previous_swap_counter;
++}
++
+ void CommandProcessor::ThrottlePresentation() {
+   // Host frame rate limiting based on framerate_limit cvar.
+   const uint32_t framerate_limit = cvars::framerate_limit;
+diff --git a/emulator-core/src/main/cpp/xenia/src/xenia/gpu/command_processor.h b/emulator-core/src/main/cpp/xenia/src/xenia/gpu/command_processor.h
+index ca1a3339c..0cc8d861e 100644
+--- a/emulator-core/src/main/cpp/xenia/src/xenia/gpu/command_processor.h
++++ b/emulator-core/src/main/cpp/xenia/src/xenia/gpu/command_processor.h
+@@ -10,6 +10,7 @@
+ #ifndef XENIA_GPU_COMMAND_PROCESSOR_H_
+ #define XENIA_GPU_COMMAND_PROCESSOR_H_
+ 
++#include <array>
+ #include <atomic>
+ #include <cstring>
+ #include <deque>
+@@ -140,7 +141,16 @@ class CommandProcessor {
+                    kernel::KernelState* kernel_state);
+   virtual ~CommandProcessor();
+   uint32_t counter() const { return counter_; }
+-  void increment_counter() { counter_++; }
++  // The guest vblank pull is on for this session and ZeroFG is live: the
++  // vblank limiter then waits on pull requests instead of sleeping.
++  bool GuestVblankPullActive() const {
++    return guest_vblank_pull_enabled_ && GuestPacingLive();
++  }
++  void increment_counter() {
++    counter_++;
++    vblank_probe_last_vblank_ns_.store(VblankProbeNowNs(),
++                                       std::memory_order_relaxed);
++  }
+ 
+   Shader* active_vertex_shader() const { return active_vertex_shader_; }
+   Shader* active_pixel_shader() const { return active_pixel_shader_; }
+@@ -664,6 +674,89 @@ class CommandProcessor {
+   // For host frame rate limiting at IssueSwap
+   uint64_t last_swap_time_ = 0;
+ 
++  // The vblank probe. A game on the 60 Hz guest vsync that misses its second
++  // vblank swaps on the third: its frames are 33 or 50 ms, never 36. The wait
++  // is an unmatched WAIT_REG_MEM that the vblank ISR releases right before the
++  // swap; the probe learns its address (the longest wait before most swaps of
++  // a VblankProbe::kWindow window) so the guest vblank pull can release a late
++  // frame at once with frame generation on. Logged when the address changes.
++  static uint64_t VblankProbeNowNs();
++  void VblankProbeWait(uint32_t address, bool is_memory, uint64_t begin_ns,
++                       uint32_t wait_info, uint32_t ref, uint32_t mask,
++                       uint32_t begin_value, uint32_t end_raw_value,
++                       uint32_t begin_counter, bool pulled);
++  // The guest vblank pull (ZeroFG). Halo 3 showed the flip wait:
++  // a WAIT_REG_MEM on one memory flag until it reads 0 (function ==, ref 0),
++  // set to 1 before the wait and cleared by the guest's vblank ISR at the
++  // first vblank after the frame is ready and due on the guest's own flip
++  // schedule (which counts vblanks and catches up after a late frame). A
++  // frame past two vblanks since the previous swap is late for 30 fps:
++  // GraphicsSystem then fires the next vblank now and skips the one it
++  // replaces, so the guest's vblank count per second is unchanged and its
++  // schedule cannot speed up. True when this unmatched wait should get it.
++  bool VblankPullDue(uint32_t address, bool is_memory) const;
++  // Set by the host command processor: ZeroFG is requested. It acts only
++  // while GuestPacingLive().
++  bool guest_vblank_pull_enabled_ = false;
++  // zerofg_fps_limit, as a minimum swap interval (0: off). With it, a pull is
++  // due at that interval instead of two vblanks (still moving a vblank, never
++  // adding one), and the swap waits for it.
++  uint64_t guest_fps_limit_ns_ = 0;
++  void ApplyGuestFpsLimitBeforeSwap();
++  // ZeroFG's live flag, set by the host command processor: the pull and the
++  // frame rate cap act only while a ZeroFG presenter is connected and has not
++  // failed open, so a fallback to the native path is native. Null: always.
++  const std::atomic<bool>* guest_pacing_live_ = nullptr;
++  bool GuestPacingLive() const {
++    return !guest_pacing_live_ ||
++           guest_pacing_live_->load(std::memory_order_acquire);
++  }
++  // The flip flag's address, learned by VblankProbe (a window where one
++  // address was the longest wait before most swaps). 0 until then.
++  uint32_t vblank_flip_address_ = 0;
++  void VblankProbeSwap();
++  struct VblankProbe {
++    static constexpr uint32_t kWindow = 300;
++    // Since the previous swap: the longest unmatched WAIT_REG_MEM.
++    uint64_t longest_wait_ns = 0;
++    uint64_t longest_release_ns = 0;
++    uint64_t longest_release_after_vblank_ns = 0;
++    uint32_t longest_address = 0;
++    bool longest_memory = false;
++    // The protocol of the longest wait: what it compared, against what, and
++    // the vblank counter when it began.
++    uint32_t longest_function = 0;
++    uint32_t longest_ref = 0;
++    uint32_t longest_mask = 0;
++    uint32_t longest_begin_value = 0;
++    uint32_t longest_end_raw_value = 0;
++    uint32_t longest_begin_counter = 0;
++    uint32_t protocol_samples = 0;  // logged per window
++    uint64_t previous_swap_ns = 0;
++    uint32_t previous_swap_counter = 0;
++    // The window.
++    uint32_t swaps = 0;
++    uint32_t waited = 0;              // a wait of 1 ms or more before the swap
++    uint32_t released_by_vblank = 0;  // ... released within 2 ms of a vblank
++    std::array<uint32_t, 5> vblanks_between = {};
++    std::array<uint64_t, 5> wait_us_by_vblanks = {};
++    std::array<uint64_t, kWindow> interval_us = {};
++    std::array<uint64_t, kWindow> wait_us = {};
++    std::array<uint64_t, kWindow> release_after_vblank_us = {};
++    std::array<uint64_t, kWindow> swap_after_release_us = {};
++    uint32_t release_samples = 0;
++    // The address that was most often the longest wait (majority vote).
++    uint32_t address = 0;
++    bool address_memory = false;
++    uint32_t address_votes = 0;
++    // The guest vblank pull: waits that asked for a pulled vblank, and
++    // those released within 3 ms of asking.
++    uint32_t pulls = 0;
++    uint32_t pull_released = 0;
++  };
++  VblankProbe vblank_probe_;
++  std::atomic<uint64_t> vblank_probe_last_vblank_ns_{0};
++
+  private:
+   reg::DC_LUT_30_COLOR gamma_ramp_256_entry_table_[256] = {};
+   reg::DC_LUT_PWL_DATA gamma_ramp_pwl_rgb_[128][3] = {};
+diff --git a/emulator-core/src/main/cpp/xenia/src/xenia/gpu/graphics_system.cc b/emulator-core/src/main/cpp/xenia/src/xenia/gpu/graphics_system.cc
+index 291bddaa0..131171f3e 100644
+--- a/emulator-core/src/main/cpp/xenia/src/xenia/gpu/graphics_system.cc
++++ b/emulator-core/src/main/cpp/xenia/src/xenia/gpu/graphics_system.cc
+@@ -9,6 +9,9 @@
+ 
+ #include "xenia/gpu/graphics_system.h"
+ 
++#include <algorithm>
++#include <chrono>
++
+ #include "xenia/base/byte_stream.h"
+ #include "xenia/base/clock.h"
+ #include "xenia/base/logging.h"
+@@ -24,6 +27,15 @@
+ #include "xenia/ui/window.h"
+ #include "xenia/ui/windowed_app_context.h"
+ 
++DEFINE_uint32(
++    zerofg_fps_limit, 0,
++    "With ZeroFG on, a frame rate cap for the game (0 = off): its swaps are "
++    "held at least 1/limit apart, and a frame waiting for its flip that long "
++    "after the previous one gets the next vblank at once. The game still sees "
++    "one vblank per period, so it never speeds up; a game whose logic runs per "
++    "frame plays slower under a cap below its own rate.",
++    "Vulkan");
++
+ DEFINE_uint32(internal_display_resolution, 8,
+               "Allow games that support different resolutions to render "
+               "in a specific resolution.\n"
+@@ -219,6 +231,9 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
+                 const uint64_t current_time = Clock::QueryGuestTickCount();
+                 const uint64_t time_delta = current_time - last_frame_time;
+ 
++                // The guest vblank pull: never two vblanks closer than this.
++                const uint64_t pull_spacing_ticks = tick_freq / 250;
++                bool pull_waiting = false;
+                 if (time_delta >= target_duration_ticks) {
+                   // More than 2 periods behind: resync instead of firing a
+                   // burst of catch-up vblanks.
+@@ -228,18 +243,53 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
+                     last_frame_time += target_duration_ticks;
+                   }
+                   MarkVblank();
++                  // A pull asked for before this vblank is answered by it.
++                  TakeVblankPull();
++                } else if (TakeVblankPull()) {
++                  // The vblank due at the next grid point fires now and that
++                  // grid point is consumed: still one vblank per period.
++                  const uint64_t last_vblank =
++                      last_vblank_guest_tick_.load(std::memory_order_acquire);
++                  if (last_vblank &&
++                      current_time - last_vblank < pull_spacing_ticks) {
++                    // Too close to the last one: keep it for a moment.
++                    std::lock_guard<std::mutex> lock(vblank_pull_mutex_);
++                    vblank_pull_requested_ = true;
++                    pull_waiting = true;
++                  } else {
++                    last_frame_time += target_duration_ticks;
++                    vblank_pull_fired_total_.fetch_add(
++                        1, std::memory_order_relaxed);
++                    MarkVblank(true);
++                  }
+                 }
+                 // Sleep only until the next deadline, precisely: the plain
+                 // NanoSleep quantum overshoot is exactly what starved the
+-                // cadence.
++                // cadence. A vblank pull request wakes it early.
+                 {
+                   const uint64_t now = Clock::QueryGuestTickCount();
+-                  const uint64_t next = last_frame_time + target_duration_ticks;
++                  uint64_t next = last_frame_time + target_duration_ticks;
++                  if (pull_waiting) {
++                    next = std::min(
++                        next,
++                        last_vblank_guest_tick_.load(std::memory_order_acquire) +
++                            pull_spacing_ticks);
++                  }
+                   if (next > now) {
+                     const uint64_t remain_ticks = next - now;
+                     const uint64_t remain_ns = static_cast<uint64_t>(
+                         remain_ticks * (1000000000.0 / tick_freq));
+-                    threading::NanoSleepPrecise(remain_ns);
++                    // Only a session with the pull waits on it; the native
++                    // path keeps the precise sleep.
++                    if (command_processor_ &&
++                        command_processor_->GuestVblankPullActive()) {
++                      std::unique_lock<std::mutex> lock(vblank_pull_mutex_);
++                      vblank_pull_cv_.wait_for(
++                          lock, std::chrono::nanoseconds(remain_ns),
++                          [&] { return vblank_pull_requested_ && !pull_waiting; });
++                    } else {
++                      threading::NanoSleepPrecise(remain_ns);
++                    }
+                   }
+                 }
+ #endif
+@@ -430,7 +480,22 @@ void GraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cpu) {
+                                         interrupt_callback_data_, source, cpu);
+ }
+ 
+-void GraphicsSystem::MarkVblank() {
++void GraphicsSystem::RequestVblankPull() {
++  {
++    std::lock_guard<std::mutex> lock(vblank_pull_mutex_);
++    vblank_pull_requested_ = true;
++  }
++  vblank_pull_cv_.notify_one();
++}
++
++bool GraphicsSystem::TakeVblankPull() {
++  std::lock_guard<std::mutex> lock(vblank_pull_mutex_);
++  const bool requested = vblank_pull_requested_;
++  vblank_pull_requested_ = false;
++  return requested;
++}
++
++void GraphicsSystem::MarkVblank(bool pulled) {
+   SCOPE_profile_cpu_f("gpu");
+ 
+   // No guest vblank ISR while paused (a halted GPU raises no interrupts).
+@@ -443,9 +508,10 @@ void GraphicsSystem::MarkVblank() {
+     const uint64_t now = Clock::QueryGuestTickCount();
+     const uint64_t prev =
+         last_vblank_guest_tick_.exchange(now, std::memory_order_acq_rel);
+-    if (prev && now > prev) {
++    if (prev && now > prev && !pulled && !vblank_skip_period_sample_) {
+       vblank_period_ticks_.store(now - prev, std::memory_order_release);
+     }
++    vblank_skip_period_sample_ = pulled;
+ 
+     // Increment vblank counter (so the game sees us making progress).
+     command_processor_->increment_counter();
+diff --git a/emulator-core/src/main/cpp/xenia/src/xenia/gpu/graphics_system.h b/emulator-core/src/main/cpp/xenia/src/xenia/gpu/graphics_system.h
+index a9e0064d0..18b6f0e82 100644
+--- a/emulator-core/src/main/cpp/xenia/src/xenia/gpu/graphics_system.h
++++ b/emulator-core/src/main/cpp/xenia/src/xenia/gpu/graphics_system.h
+@@ -11,6 +11,7 @@
+ #define XENIA_GPU_GRAPHICS_SYSTEM_H_
+ 
+ #include <atomic>
++#include <condition_variable>
+ #include <cstdint>
+ #include <functional>
+ #include <memory>
+@@ -92,6 +93,16 @@ class GraphicsSystem {
+   virtual void SetInterruptCallback(uint32_t callback, uint32_t user_data);
+   void DispatchInterruptCallback(uint32_t source, uint32_t cpu);
+ 
++  // The guest vblank pull (ZeroFG): a guest frame late for its flip, waiting for the
++  // vblank ISR to clear its flip flag, gets the next vblank now (the command
++  // processor asks). The vblank it replaces on the 60 Hz grid is skipped, so
++  // the guest still sees exactly one vblank per period and its own flip
++  // schedule (which counts vblanks) keeps its speed. Any thread.
++  void RequestVblankPull();
++  uint64_t vblank_pull_fired_total() const {
++    return vblank_pull_fired_total_.load(std::memory_order_relaxed);
++  }
++
+   virtual void ClearCaches();
+ 
+   void InvalidateGpuMemory();
+@@ -133,7 +144,9 @@ class GraphicsSystem {
+   uint32_t ReadRegister(uint32_t addr);
+   void WriteRegister(uint32_t addr, uint32_t value);
+ 
+-  void MarkVblank();
++  void MarkVblank(bool pulled = false);
++  // The guest vblank pull: takes a pending request.
++  bool TakeVblankPull();
+ 
+   Memory* memory_ = nullptr;
+   cpu::Processor* processor_ = nullptr;
+@@ -153,6 +166,15 @@ class GraphicsSystem {
+   // 0 before the first vblank fires.
+   std::atomic<uint64_t> last_vblank_guest_tick_{0};
+   std::atomic<uint64_t> vblank_period_ticks_{0};
++  // A pulled vblank and the one after it are a short and a long interval:
++  // neither is the vblank period.
++  bool vblank_skip_period_sample_ = false;
++
++  // The guest vblank pull (RequestVblankPull).
++  std::mutex vblank_pull_mutex_;
++  std::condition_variable vblank_pull_cv_;
++  bool vblank_pull_requested_ = false;  // guarded by vblank_pull_mutex_
++  std::atomic<uint64_t> vblank_pull_fired_total_{0};
+ 
+   RegisterFile* register_file_;
+   std::unique_ptr<CommandProcessor> command_processor_;
+diff --git a/emulator-core/src/main/cpp/xenia/src/xenia/gpu/pm4_command_processor_implement.h b/emulator-core/src/main/cpp/xenia/src/xenia/gpu/pm4_command_processor_implement.h
+index b9d8917ec..b90fe6757 100644
+--- a/emulator-core/src/main/cpp/xenia/src/xenia/gpu/pm4_command_processor_implement.h
++++ b/emulator-core/src/main/cpp/xenia/src/xenia/gpu/pm4_command_processor_implement.h
+@@ -808,6 +808,8 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_XE_SWAP(uint32_t packet,
+                                          frontbuffer_height);
+   }
+ 
++  ApplyGuestFpsLimitBeforeSwap();
++  VblankProbeSwap();
+   COMMAND_PROCESSOR::IssueSwap(frontbuffer_ptr, frontbuffer_width,
+                                frontbuffer_height);
+ 
+@@ -880,6 +882,11 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+                 : register_file_->values[poll_reg_addr];
+ 
+   bool matched = false;
++  // The vblank probe: when this wait started, if it had to wait at all.
++  uint64_t probe_begin_ns = 0;
++  uint32_t probe_begin_value = 0;
++  uint32_t probe_begin_counter = 0;
++  bool probe_pulled = false;
+ 
+   do {
+     uint32_t value = value_ref;
+@@ -906,6 +913,17 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+     matched = MatchValueAndRef(value & mask, ref, wait_info);
+ 
+     if (!matched) {
++      // The guest vblank pull: a late frame waiting on its flip flag (asked
++      // again at each poll: it can become due while it waits).
++      if (!probe_pulled && VblankPullDue(poll_reg_addr, is_memory)) {
++        graphics_system_->RequestVblankPull();
++        probe_pulled = true;
++      }
++      if (!probe_begin_ns) {
++        probe_begin_ns = VblankProbeNowNs();
++        probe_begin_value = value;
++        probe_begin_counter = counter_;
++      }
+       // Wait using the duration specified by the guest.
+       if (wait >= 0x100) {
+         PrepareForWait();
+@@ -933,6 +951,11 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_WAIT_REG_MEM(
+     }
+   } while (!matched);
+ 
++  if (probe_begin_ns) {
++    VblankProbeWait(poll_reg_addr, is_memory, probe_begin_ns, wait_info, ref,
++                    mask, probe_begin_value, value_ref, probe_begin_counter,
++                    probe_pulled);
++  }
+   return true;
+ }
+ XE_NOINLINE
+diff --git a/emulator-core/src/main/cpp/xenia/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/emulator-core/src/main/cpp/xenia/src/xenia/gpu/vulkan/vulkan_command_processor.cc
+index 97f14dab7..44e7fd2fa 100644
+--- a/emulator-core/src/main/cpp/xenia/src/xenia/gpu/vulkan/vulkan_command_processor.cc
++++ b/emulator-core/src/main/cpp/xenia/src/xenia/gpu/vulkan/vulkan_command_processor.cc
+@@ -384,6 +384,17 @@ bool VulkanCommandProcessor::SetupContext() {
+   frames_in_flight_limit_ = 2u;
+   XELOGI("VulkanCommandProcessor: guest frames in flight limit = {}",
+          frames_in_flight_limit_);
++  // A late guest frame gets its vblank at once, only with frame generation.
++  const bool zerofg_requested = xe::ui::vulkan::IsZeroFGRequested();
++  guest_fps_limit_ns_ = zerofg_requested && cvars::zerofg_fps_limit
++                            ? 1000000000ull / cvars::zerofg_fps_limit
++                            : 0;
++  guest_vblank_pull_enabled_ = zerofg_requested;
++  // Both act only while the ZeroFG presenter is connected and not failed open.
++  guest_pacing_live_ = &xe::ui::vulkan::ZeroFGGuestPacingLive();
++  XELOGI("VulkanCommandProcessor: guest vblank pull = {} fps_limit = {}",
++         guest_vblank_pull_enabled_,
++         guest_fps_limit_ns_ ? cvars::zerofg_fps_limit : 0);
+ 
+   // Check if debug markers should be enabled (CVAR or RenderDoc detection).
+   UpdateDebugMarkersEnabled();

@@ -4,7 +4,7 @@ The engine makes frames; the presenter turns that into frame generation. It
 decides which real frames to keep, when to generate, when each output is shown,
 and in what order, and it carries every frame from the game's GPU device to the
 screen. This folder is the presenter exactly as it ships in
-[XenDroid-ZeroFG 1.0.1](https://github.com/hy300leosquizz-ctrl/XenDroid-ZeroFG),
+[XenDroid-ZeroFG 1.0.2](https://github.com/hy300leosquizz-ctrl/XenDroid-ZeroFG),
 about 25,000 lines.
 
 It is a reference, not a library: it builds inside XenDroid-ZeroFG and depends
@@ -23,9 +23,10 @@ your host needs.
 | `zerofg_build_guard.h` | Surviving a driver that crashes compiling ZeroFG's pipelines: a marker around each build, Compat at the next launch, off after a second crash, per driver and app build |
 | `vulkan_presenter_zerofg_device_context.inc` | Creating ZeroFG's own Vulkan device and its output pipelines |
 | `vulkan_presenter_zerofg_source_adapter.inc` | Publishing each finished game frame to the presenter |
-| `zerofg_config.h` | The user setting: mode (off, zero, reallyzero) |
+| `zerofg_config.h` | The user settings (mode: off, zero, reallyzero; the game frame rate cap) and the flag that says the presenter is live, which the guest pacing reads |
 | `zerofg_xenia_adapter.h/.cc` | The thin wrapper XenDroid uses around `zerofg::Interpolator` |
 | `adrenotools/kgsl-context-priority.patch` | GPU priority for ZeroFG's device on Adreno: the change to XenDroid's libadrenotools (a hook that sets the KGSL priority of the contexts a custom driver creates) and to `vulkan_device.cc`/`vulkan_instance.cc` that uses it ([README](adrenotools/README.md)) |
+| `xendroid_glue/guest-pacing.patch` | Guest pacing, in XenDroid's GPU code (command processor, vblank limiter, PM4 wait): a vblank probe learns the address a game waits on for its flip, a frame already late for it gets its vblank at once (the vblank it replaces is skipped, so the game never speeds up), and the game frame rate cap holds swaps at least 1/limit apart. Both only while the presenter is live |
 | `xendroid_glue/vulkan_presenter_zerofg_glue.cc` | The other half: the callbacks inside XenDroid's own presenter that record a Generation, run the normal output pipeline on a frame (the Post) and hand the surface over |
 
 The rest of the integration lives inside XenDroid's own presenter
@@ -116,6 +117,45 @@ These took most of the two months, and each has a measured reason behind it:
 - **Fail open.** Any structural failure hands the screen back to the host's
   normal path for the rest of the session.
 
+## What changed in 1.0.2
+
+Pacing, from the 1.1 work, measured in play on the Adreno 840 (Halo 3, Rayman
+Origins, Modern Warfare 3):
+
+- **The rate lock.** The regime estimate learns only from clean intervals and
+  moves only when a window clusters; a game on a 60 Hz guest vsync that takes
+  two or three vblanks per frame (33/50 ms in a drifting mix) never clusters,
+  and under backpressure every interval is censored, so the period stayed where
+  it last caught a cluster: above the game's rate the pools filled and the game
+  waited (~450 ms wells in Arkham City). The lattice now follows the trimmed
+  mean of the last eight intervals, each without the backpressure wait in it
+  (a waited sample pulls at most a fifth below the window), and runs up to a
+  fifth faster while committed real frames sit more than one quantum deeper
+  than Better D operates at. Changes go through the frequency confirmation and
+  future-only reanchors with a 3 % dead band; Phase Debt stands down while the
+  lock owns the lattice. Nothing is skipped.
+- **The reanchor cutover.** A frequency reanchor happens when a real frame is
+  accepted, while the first frame the new epoch will commit still has its
+  predecessor and generated frame in the old epoch. The new epoch could start
+  before that frame's floor, a slot nothing can fill: the frame took the next
+  tick and the empty one counted as a hold. The epoch now starts at that floor
+  when it is later (the next frame's pair boundary, or the oldest uncommitted
+  frame's floor once its predecessor is committed). No commitment moves and no
+  floor is lowered. Modern Warfare 3, heavy scenes: holds 3.6 % -> 0.7 %, the
+  worst interval per window one refresh shorter.
+- **Better D's references.** A need sample uses its pair's own quantum (a
+  reanchor can change the global one inside the window), and a pair counts as
+  late against the rate lock's period, not a stale regime period.
+- **Guest pacing** (`xendroid_glue/guest-pacing.patch`): the vblank pull and
+  the game frame rate cap, acting only while the presenter is connected and has
+  not failed open. A cap pays in a game that keeps the GPU at 100 %: Modern
+  Warfare 3 at 40 keeps ~80 fps on screen with 55 ms of lag instead of 70 and
+  1 % of missed refreshes instead of 12; Halo 3 at 20 halves its lag. A game
+  whose logic runs per frame slows under a cap below its own rate.
+- **Always-S.** On its own device the presenter has no authority to retire a
+  generated frame that was admitted: the real frame after it waits until it is
+  ready. The unreachable retire path that remained is gone (no change).
+
 ## What changed in 1.0.1
 
 Latency and the cadence of a game below 30 fps, from the 1.1 work, measured in
@@ -150,5 +190,6 @@ Apache-2.0, like the rest of this repository, with two exceptions that keep
 Xenia's BSD 3-Clause license ([LICENSE-Xenia](LICENSE-Xenia)):
 `vulkan_presenter_zerofg_device_context.inc`, adapted from Xenia's presenter, and
 `xendroid_glue/vulkan_presenter_zerofg_glue.cc`, an excerpt of it. The
-adrenotools patch changes libadrenotools, which keeps its BSD 2-Clause license.
+adrenotools patch changes libadrenotools, which keeps its BSD 2-Clause license;
+`xendroid_glue/guest-pacing.patch` changes Xenia files, which keep theirs.
 The XenDroid and Xenia files it depends on keep their own licenses.

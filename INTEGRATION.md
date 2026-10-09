@@ -166,8 +166,26 @@ XenDroid-ZeroFG:
   for its own GPU (its previous frame still copying), that is the game's
   speed, not frame generation slowing it. Counting it as backpressure hides
   the game's real frame time, and pacing locks at the wrong rate.
-- **Never drop or reorder a real frame for a generated one.** If S is late,
-  skip it and show the real frame on time.
+- **Never drop or reorder a real frame for a generated one.** On a shared
+  queue, if S is late, skip it and show the real frame on time. On its own
+  device with GPU priority (below), S is never that late: XenDroid-ZeroFG
+  shows every admitted S and the real frame after it waits for it.
+- **Follow the game's real rate, not a rate it settled on once.** Measure the
+  period from every frame interval minus the time the game waited on you (a
+  trimmed mean of the last eight works), and run the output slightly faster
+  while frames sit deeper than you need, until that delay is gone. A game on a
+  60 Hz vsync that alternates 33 and 50 ms frames never settles on one rate,
+  and a clock that waits for it to settle stays wrong.
+- **When the output rhythm changes, start where the next real frame can
+  actually go.** Its generated frame and predecessor were already placed on the
+  old rhythm; a new rhythm that starts earlier leaves a slot nothing fills.
+- **In an emulator, let a late game frame have its vblank.** A game that waits
+  for the console's vblank and misses one waits for the next; releasing it at
+  once (and skipping the vblank it replaces, so the game keeps its speed) keeps
+  its frames continuous. Offer a frame rate cap too: a game that keeps the GPU
+  at 100 % leaves frame generation no room, and capping it a little below its
+  usual rate gives the same output with less lag
+  ([host/xenia-android/xendroid_glue/guest-pacing.patch](host/xenia-android/xendroid_glue/guest-pacing.patch)).
 - **Don't let the display slow the game.** If presentation blocks (a busy
   compositor, a system frame cap), show fewer generated frames rather than
   making the game wait.

@@ -4,8 +4,8 @@ The engine makes frames; the presenter turns that into frame generation. It
 decides which real frames to keep, when to generate, when each output is shown,
 and in what order, and it carries every frame from the game's GPU device to the
 screen. This folder is the presenter exactly as it ships in
-[XenDroid-ZeroFG 1.0](https://github.com/hy300leosquizz-ctrl/XenDroid-ZeroFG),
-about 24,500 lines.
+[XenDroid-ZeroFG 1.0.1](https://github.com/hy300leosquizz-ctrl/XenDroid-ZeroFG),
+about 25,000 lines.
 
 It is a reference, not a library: it builds inside XenDroid-ZeroFG and depends
 on parts of XenDroid listed below. Read it to see how every problem in
@@ -17,9 +17,10 @@ your host needs.
 | File | What it does |
 | --- | --- |
 | `zerofg_independent_presenter.h/.cc` | The presenter: capture and residency of real frames, admission of generated frames, the pacing clock, production (generation and post), the order of what is shown, the fallback |
-| `zerofg_main_surface_egress.h/.cc` | Presentation on the game's own Android surface from ZeroFG's device: one present per display refresh, never waiting for the display, learning system frame caps (its output shaper, the old GPU guard, is off in 1.0) |
+| `zerofg_main_surface_egress.h/.cc` | Presentation on the game's own Android surface from ZeroFG's device: one present per display refresh, never waiting for the display, learning system frame caps, and the display refresh the presenter can run ahead by (its output shaper, the old GPU guard, is off since 1.0) |
 | `zerofg_device_handoff.h/.inc` | Moving each real frame from the game's Vulkan device to ZeroFG's (Android hardware buffers and sync files) |
 | `zerofg_completion_owner.h` | Proving GPU completion without ever blocking (timelines and sync files) |
+| `zerofg_build_guard.h` | Surviving a driver that crashes compiling ZeroFG's pipelines: a marker around each build, Compat at the next launch, off after a second crash, per driver and app build |
 | `vulkan_presenter_zerofg_device_context.inc` | Creating ZeroFG's own Vulkan device and its output pipelines |
 | `vulkan_presenter_zerofg_source_adapter.inc` | Publishing each finished game frame to the presenter |
 | `zerofg_config.h` | The user setting: mode (off, zero, reallyzero) |
@@ -114,6 +115,34 @@ These took most of the two months, and each has a measured reason behind it:
   non-waiting checks; some drivers turn a zero-timeout wait into a wait forever.
 - **Fail open.** Any structural failure hands the screen back to the host's
   normal path for the rest of the session.
+
+## What changed in 1.0.1
+
+Latency and the cadence of a game below 30 fps, from the 1.1 work, measured in
+play on the Adreno 840:
+
+- **Two game frames in flight, not three.** This lives in XenDroid's command
+  processor (`frames_in_flight_limit_`), not here: with GPU priority the third
+  frame only queued a frame more of latency and let the period lock at 20 fps
+  under stalls (37-90 ms on two against 80-540 on three).
+- **Pacing section 7 is off.** The physical operating point was built for the
+  pre-priority GPU queue; with priority it only locked the output at 40 fps
+  with about 540 ms of delay after a few hiccups.
+- **The game's wait for its own GPU is not backpressure.** The handoff's
+  Publish waits for its depth slot while the previous frame's copy still runs
+  on the game's device; that wait no longer counts as ZeroFG's backpressure.
+  Counting it censored every period sample of a GPU-bound game, froze the
+  period at 30 fps while the game ran 20-25, and sent pairs out back to back.
+- **The presentation advance.** The physical presentation may run a few
+  refreshes ahead of the semantic target to drain the latency well that late
+  commitments leave behind. Nothing is skipped and the order and lattice are
+  unchanged. It is damped (a dead band of two refreshes, streaks), watches the
+  generated frames and the capacity gate and steps down at once when the gate
+  refuses, and is capped at 250 ms.
+- **The fail-open drain polls the capture transfers,** so the handback
+  completes: Halo 3 froze on ZeroFG's last frame after the engine refused its
+  picture size.
+- **The build guard** (`zerofg_build_guard.h`, used in `xendroid_glue/`).
 
 ## License
 

@@ -1,6 +1,6 @@
 # ZeroFG
 
-> Frame generation for mobile GPUs, built on Vulkan. **Version 1.0.**
+> Frame generation for mobile GPUs, built on Vulkan. **Version 1.0.1.**
 
 ZeroFG takes two frames a game rendered and creates the one halfway between
 them. Shown in between, those frames double the frame rate: 60 fps becomes
@@ -91,7 +91,7 @@ Or let CMake fetch it:
 include(FetchContent)
 FetchContent_Declare(zerofg
   GIT_REPOSITORY https://github.com/hy300leosquizz-ctrl/ZeroFG.git
-  GIT_TAG v1.0.0)
+  GIT_TAG v1.0.1)
 FetchContent_MakeAvailable(zerofg)
 target_link_libraries(my_host PRIVATE zerofg::zerofg)
 ```
@@ -118,6 +118,20 @@ presenter at all. It stays in this repository's history. 1.0 replaces all of
 it: a new motion estimator verified at full resolution, a temporal prior, an
 exposure model, a continuity guard, a new resolve, and the presenter, measured
 against ground truth in the laboratory and in play.
+
+## What's new in 1.0.1
+
+- **Lower latency and a steadier cadence below 30 fps**, in the presenter:
+  the presentation can run a few refreshes ahead to drain accumulated delay,
+  the game's wait for its own GPU no longer counts as backpressure, and the
+  pre-priority operating point is off
+  ([details](host/xenia-android/README.md#what-changed-in-101)).
+- **Any picture size.** A picture the cell grid does not divide runs padded to
+  the next one it does (Halo 3, 1152 x 640); a tiled picture is bit-identical
+  to 1.0.
+- **A build guard** in the reference host: a driver that crashes compiling
+  ZeroFG's pipelines runs Compat at the next launch, and ZeroFG turns off
+  after a second crash.
 
 ## Contact
 

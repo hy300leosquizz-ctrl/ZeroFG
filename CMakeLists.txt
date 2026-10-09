@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(zerofg VERSION 1.0.0 LANGUAGES CXX)
+project(zerofg VERSION 1.0.1 LANGUAGES CXX)
 
 # ZeroFG: a Vulkan frame generation engine. This builds the static library
 # `zerofg` (and the alias `zerofg::zerofg`).

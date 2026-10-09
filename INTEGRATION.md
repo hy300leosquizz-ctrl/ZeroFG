@@ -20,7 +20,7 @@ never submits, never waits and never presents.
 include(FetchContent)
 FetchContent_Declare(zerofg
   GIT_REPOSITORY https://github.com/hy300leosquizz-ctrl/ZeroFG.git
-  GIT_TAG v1.0.0)
+  GIT_TAG v1.0.1)
 FetchContent_MakeAvailable(zerofg)
 target_link_libraries(my_host PRIVATE zerofg::zerofg)
 ```
@@ -82,8 +82,12 @@ changes. It allocates the working resources and builds the pipelines, so call
 it before the frames that need it, never in the middle of one.
 
 - **Size.** ZeroFG lays a grid of cells over the picture, 64 cells on the long
-  side. The grid must divide the picture exactly: 1280 x 720 and 1920 x 1080
-  work. Other sizes return `kUnsupported`.
+  side. A picture the grid divides exactly (1280 x 720, 1920 x 1080) runs as
+  it is. Any other picture runs padded to the next size the grid divides
+  (Halo 3's 1152 x 640 runs at 1152 x 648): the edge is repeated into the pad
+  and only the picture is written out. A padded picture needs an
+  `A2B10G10R10_UNORM_PACK32` input and an output format with `BLIT_DST`
+  support; without them it returns `kUnsupported`.
 - **Input format.** Any format your device can sample with linear filtering.
   If your real frames sit inside a larger image (padding, letterbox), pass an
   `active_rect`. Off-origin or larger-than-picture inputs need
@@ -152,9 +156,16 @@ XenDroid-ZeroFG:
 - **Show R, S, R, S**: each generated frame S between the two real frames it
   came from, at the midpoint of their times. A 60 fps game becomes one output
   every 8.3 ms.
-- **Expect one frame of latency.** S needs the next real frame, so every real
-  frame is shown about one game frame later than it would be without frame
-  generation.
+- **Expect one frame of latency, and keep it there.** S needs the next real
+  frame, so every real frame is shown about one game frame later than it
+  would be without frame generation. Don't add more: keep two game frames in
+  flight rather than three (the third only queues), and let the presentation
+  run a refresh or two ahead of its target when late frames have pushed the
+  whole sequence back, instead of carrying that delay until the game stalls.
+- **Only the presenter's own refusals are backpressure.** When the game waits
+  for its own GPU (its previous frame still copying), that is the game's
+  speed, not frame generation slowing it. Counting it as backpressure hides
+  the game's real frame time, and pacing locks at the wrong rate.
 - **Never drop or reorder a real frame for a generated one.** If S is late,
   skip it and show the real frame on time.
 - **Don't let the display slow the game.** If presentation blocks (a busy

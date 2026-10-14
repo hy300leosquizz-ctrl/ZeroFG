@@ -98,8 +98,11 @@ time.
 7. **Hand the screen over** with `Connect` and the surface methods, so your
    presenter and ZeroFG never present at the same time.
 
-Making this semi-automatic (the presenter behind a small host interface, so it
-builds outside XenDroid unchanged) is the next step for this repository.
+Step 4, and the build, are done by [`../portable/`](../portable/): stand-ins for
+the XenDroid types, so the presenter builds outside XenDroid unchanged. Its
+README lists what a host still has to do that the presenter does not tell you
+(activation, one size per connection, the hand-back, the refresh rate), learned
+bringing up ARMSX2.
 
 ## The rules it keeps
 

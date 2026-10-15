@@ -1153,19 +1153,25 @@ bool ZeroFGDeviceHandoff::Publish(
   AcquireSourcePoolLock(lock);
 #if XE_PLATFORM_ANDROID
   FinalizePendingSourceLocked();
-  // Bounded depth 1: publish only once B has acquired the Published head.
-  // Acquire wakes this; the 1 ms recheck only observes lifecycle exits.
+  // Bounded depth (SetPublishDepth, 1 by default): publish only once fewer
+  // publications than that wait for B. Its head is the oldest, which B's
+  // Acquire takes first and which wakes this; the 1 ms recheck only observes
+  // lifecycle exits.
   while (armed_.load(std::memory_order_acquire) && !failed() && pool_ &&
          consumer && consumer->accepting()) {
-    bool head_pending = false;
-    int head_done_fd = -1;
-    for (const auto& slot : pool_->slots) {
-      if (slot.state == Pool::State::kPublished) {
-        head_pending = true;
-        head_done_fd = slot.source_done_fd;
-      }
+    uint32_t pending = 0;
+    uint32_t head = UINT32_MAX;
+    for (uint32_t i = 0; i < kSlotCount; ++i) {
+      const auto& slot = pool_->slots[i];
+      if (slot.state != Pool::State::kPublished) continue;
+      ++pending;
+      if (head == UINT32_MAX ||
+          slot.metadata.publication.publication_id <
+              pool_->slots[head].metadata.publication.publication_id)
+        head = i;
     }
-    if (!head_pending) break;
+    if (pending < publish_depth_) break;
+    const int head_done_fd = pool_->slots[head].source_done_fd;
     // B defers the head until its copy has finished on A (Acquire never puts
     // a pending cross-device dependency on B's queue). While that copy is
     // still running, the Source is waiting for its own GPU, the game's frame

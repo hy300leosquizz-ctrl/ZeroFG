@@ -23,6 +23,15 @@ class ZeroFGDeviceHandoff {
 
   // Startup only. No game publication is armed before PASS.
   bool SelfTest();
+  // How many publications may wait for B before Publish blocks the Source.
+  // 1 by default: shallow physical depth, against bufferbloat, for a Source
+  // that limits its own frames in flight (XenDroid's command processor). A
+  // Source that normally runs a frame or two ahead of its GPU (a PCSX2-style GS
+  // thread) can take 2, so that Publish does not hold it to its GPU's
+  // completion of the previous frame. Set before Arm.
+  void SetPublishDepth(uint32_t depth) {
+    publish_depth_ = depth < 1 ? 1 : (depth > kSlotCount - 2 ? kSlotCount - 2 : depth);
+  }
   void Arm();
   void Disarm();
   // Teardown only: synchronize with a marker already being recorded/exported.
@@ -105,6 +114,8 @@ class ZeroFGDeviceHandoff {
   // The depth wait while the published head's copy was still running on A:
   // the Source's own GPU, not backpressure (Publish).
   std::atomic<uint64_t> source_gpu_depth_wait_ns_{0};
+  // SetPublishDepth: publications that may wait for B before Publish blocks.
+  uint32_t publish_depth_ = 1;
   uint64_t export_failures_ = 0, import_failures_ = 0;
   uint64_t release_failures_ = 0, aba_failures_ = 0;
   uint64_t reuse_before_release_ = 0, replaced_unaccepted_ = 0;

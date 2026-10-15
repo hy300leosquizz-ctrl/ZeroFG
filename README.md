@@ -139,6 +139,8 @@ The engine is unchanged (the same as 1.0.2); this release is for hosts:
   to do that the presenter does not tell you.
 - **No Vulkan SDK needed to build.** The shaders ship compiled
   (`shaders/prebuilt`); the SDK's tools are only needed to change them.
+- **A host-chosen handoff publish depth** (`SetPublishDepth`, 1 by default), for
+  a Source that runs ahead of its GPU.
 
 ## What's new in 1.0.2
 

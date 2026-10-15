@@ -74,9 +74,12 @@ Learned bringing up the first host. The presenter does not tell you these; each 
    ZeroFG is on: `preferredDisplayModeId`, `Surface.setFrameRate(…, CHANGE_FRAME_RATE_ALWAYS)` and,
    on Android 15+, `View.setRequestedFrameRate(REQUESTED_FRAME_RATE_CATEGORY_HIGH)`. From native
    code, `ANativeWindow_setFrameRate` lives in `libnativewindow.so`: `dlopen` it, the global scope
-   does not have it. And on Android 15+ an app that declares itself a game (`android:isGame`,
-   `android:appCategory="game"`) gets a 60 fps cap from GameManager that wins over those votes
-   until the system lets go (`GameFrameRateOverrides` in `dumpsys SurfaceFlinger`).
+   does not have it. Two things win over those votes: on Android 15+ an app that declares itself
+   a game (`android:isGame`, `android:appCategory="game"`) gets a 60 fps cap from GameManager
+   until the system lets go (`GameFrameRateOverrides` in `dumpsys SurfaceFlinger`), and an OEM's
+   thermal policy caps the panel at 90 or 60 as the skin warms (`PRIORITY_THERMAL_LIMIT_REFRESH_RATE`
+   among the DisplayModeDirector votes in `dumpsys display`, from ~44-46 °C of skin on HyperOS).
+   Read those before blaming the pacing for a 60 Hz panel.
 8. **Switching in game is disconnect and connect.** Off: take the presenter off the window
    (`BeginSurfaceDisconnect`, the game's device idle, `DestroySurfaceResourcesAfterSourceIdle`,
    drain) and rebuild the game's swap chain. On: `Connect` again; it qualifies the cadence again in
@@ -84,7 +87,20 @@ Learned bringing up the first host. The presenter does not tell you these; each 
 9. **GPU priority** for device B, as [`../presenter/README.md`](../presenter/README.md) step 3
    says: `VK_KHR_global_priority` for drivers that honour it, and on Adreno with a custom Turnip the
    KGSL context priority through adrenotools ([`../xendroid/adrenotools/`](../xendroid/adrenotools/)).
-   Without it the two devices are not isolated in time when the game saturates the GPU.
+   Without it the two devices are not isolated in time when the game saturates the GPU. Turned
+   off on ARMSX2, device B fell behind the game in a heavy scene (31 + 31 on screen instead of
+   42 + 42, Source backpressure 25-50 %).
+10. **Capture what your present draws.** Take the game's frame from the texture your present
+    actually samples, with the rectangle it samples: an upscaler or a sharpener that runs before
+    the present replaces the texture and its coordinates (ARMSX2 at 1x with FSR: a 1600x1200
+    rectangle read from a 640x448 texture filled a third of the screen with smeared edges).
+11. **Draw nothing for your own present while the presenter owns the window.** Nothing you draw
+    there reaches the screen; skip the render pass and the blit, and keep only the capture, the
+    overlay's draw data and the submit.
+12. **Publish depth.** `ZeroFGDeviceHandoff::SetPublishDepth` (1 by default) sets how many
+    publications may wait for device B before `Publish` blocks the game. A Source that limits its
+    own frames in flight is fine at 1; a GS-style thread that runs a frame or two ahead of its
+    GPU can take 2. It stays lossless: the game still waits once the depth is full.
 
 ## Status
 
@@ -95,12 +111,18 @@ God of War II).
 - **Runtime validated:** the handoff self-test (PASS, no mismatches); the presenter taking the
   window from the game's swap chain; at 120 Hz a 60 fps game shown at 118-121 fps, Real and
   generated one to one, 19-32 ms from the game's issue to the screen (median); switching ZeroFG
-  off and on in game; the game's overlay drawn by the Post.
-- **Observed:** with the panel held at 60 Hz (the GameManager cap above) and a 60 fps game, the
-  presenter keeps generating and its Source backpressure holds the game at 30 fps. A host should
-  let the user switch frame generation off there.
-- **Compiled, not yet runtime validated:** GPU priority (item 9), the KGSL hook carried into
-  ARMSX2's adrenotools and the global priority.
+  off and on in game; the game's overlay drawn by the Post; the GPU priority (global priority
+  high, a KGSL draw context created at priority 4 by the hook); the capture behind an upscaler
+  (item 10). God of War II and Devil May Cry 3 SE run clean.
+- **Compiled, not yet runtime validated:** switching between Zero and ReallyZero in game.
+- **Observed:** with the panel held at 60 Hz (the GameManager cap or the thermal cap above) and a
+  60 fps game, the presenter keeps generating and its Source backpressure holds the game at 30
+  fps; in an emulator paced by its emulated vblank that is slow motion. A host should let the
+  user switch frame generation off there.
+- **Observed:** a game whose frame is heavy in render passes and copies (Shadow of the Colossus in
+  its 60 fps mode: ~290 passes and ~200 texture copies a frame, against ~30 and ~10 in God of
+  War II) slows to 74-78 % with ZeroFG on, while its 30 fps mode and other games run clean. Not
+  explained yet.
 
 ## License
 

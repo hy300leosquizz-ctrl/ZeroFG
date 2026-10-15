@@ -5,7 +5,7 @@ uint64_t HandoffNowNs() {
                       std::chrono::steady_clock::now().time_since_epoch())
                       .count());
 }
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
 class HandoffValidationWatch {
  public:
   explicit HandoffValidationWatch(const VulkanInstance* instance)
@@ -145,7 +145,7 @@ uint64_t ZeroFGDeviceHandoff::TimingWindow::Maximum() const {
 }
 
 struct ZeroFGDeviceHandoff::Pool {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   enum class State {
     kFree,
     kWriting,
@@ -220,7 +220,7 @@ void ZeroFGDeviceHandoff::Fail(const char* op, VkResult result) {
       op, int32_t(result), b_->IsLost(), a_->IsLost());
 }
 void ZeroFGDeviceHandoff::FinalizePendingSourceLocked() {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   if (!pending_finalize_.load(std::memory_order_acquire)) return;
   const PendingSourceFinalize pending = pending_source_finalize_;
   if (!pool_ || pending.slot >= kSlotCount ||
@@ -359,7 +359,7 @@ void ZeroFGDeviceHandoff::DestroyAfterIdle() {
   if (had_pool) Log();
 }
 void ZeroFGDeviceHandoff::DestroyPoolLocked() {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   if (pool_) {
     for (auto& s : pool_->slots) {
       HandoffClose(s.import_fd);
@@ -391,7 +391,7 @@ void ZeroFGDeviceHandoff::DestroyPoolLocked() {
 }
 
 bool ZeroFGDeviceHandoff::CreatePool(VkExtent2D extent, uint32_t slot_count) {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   if (pool_) return false;
   pool_ = std::make_unique<Pool>();
   pool_->extent = extent;
@@ -527,7 +527,7 @@ bool ZeroFGDeviceHandoff::CreatePool(VkExtent2D extent, uint32_t slot_count) {
 }
 
 bool ZeroFGDeviceHandoff::SelfTest() {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   HandoffValidationWatch validation(a_->vulkan_instance());
   if (!a_->properties().synchronization2 || !a_->vkCmdPipelineBarrier2() ||
       !a_->vkDeviceWaitIdle() || !a_->vkGetSemaphoreFdKHR() ||
@@ -621,7 +621,7 @@ bool ZeroFGDeviceHandoff::SelfTest() {
 }
 
 bool ZeroFGDeviceHandoff::SelfTestExtent(VkExtent2D extent) {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   const auto& af = a_->functions();
   const auto& f = b_->functions();
   const uint32_t texel_count = extent.width * extent.height;
@@ -833,7 +833,7 @@ bool ZeroFGDeviceHandoff::SelfTestExtent(VkExtent2D extent) {
 
 bool ZeroFGDeviceHandoff::RecordSource(uint32_t index, VkImage source,
                                        VkBuffer test_pattern) {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   auto& s = pool_->slots[index];
   const auto& f = a_->functions();
   if (f.vkResetCommandPool(a_->device(), s.commands, 0) != VK_SUCCESS)
@@ -901,7 +901,7 @@ bool ZeroFGDeviceHandoff::RecordSource(uint32_t index, VkImage source,
 }
 
 bool ZeroFGDeviceHandoff::Reclaim(uint32_t index) {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   auto& s = pool_->slots[index];
   if (s.state == Pool::State::kFree) return true;
   if ((s.state != Pool::State::kPublished && s.state != Pool::State::kReleased))
@@ -952,7 +952,7 @@ const VkSubmitInfo* ZeroFGDeviceHandoff::PrepareSource(uint32_t mailbox,
     source_record_lock_.unlock();
     return nullptr;
   }
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   const uint64_t prepare_begin_ns = HandoffNowNs();
   uint32_t selected = UINT32_MAX;
   uint64_t selected_generation = 0;
@@ -1071,7 +1071,7 @@ const VkSubmitInfo* ZeroFGDeviceHandoff::PrepareSource(uint32_t mailbox,
 
 void ZeroFGDeviceHandoff::SourceSubmitted(VkResult result, uint64_t queue_ns,
                                           uint64_t submit_ns) {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   if (recording_ == UINT32_MAX || !source_record_lock_.owns_lock()) return;
   const uint32_t recording = recording_;
   const uint64_t generation = recording_generation_;
@@ -1151,7 +1151,7 @@ bool ZeroFGDeviceHandoff::Publish(
   // Lossless backpressure: the Source waits for the pool mutex.
   std::unique_lock<std::mutex> lock;
   AcquireSourcePoolLock(lock);
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   FinalizePendingSourceLocked();
   // Bounded depth 1: publish only once B has acquired the Published head.
   // Acquire wakes this; the 1 ms recheck only observes lifecycle exits.
@@ -1269,7 +1269,7 @@ void ZeroFGDeviceHandoff::AddSourceBackpressureWait(uint64_t wait_ns) {
 
 void ZeroFGDeviceHandoff::AbortLease(uint32_t index, uint64_t generation) {
   std::lock_guard<std::mutex> lock(mutex_);  // B only; Source always try-locks.
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   if (!pool_) return;  // The pool, and this slot's state, are already gone.
   auto& s = pool_->slots[index];
   if (s.generation != generation || s.state != Pool::State::kAcquired) {
@@ -1283,7 +1283,7 @@ void ZeroFGDeviceHandoff::AbortLease(uint32_t index, uint64_t generation) {
 
 bool ZeroFGDeviceHandoff::ReleaseLease(uint32_t index, uint64_t generation) {
   std::lock_guard<std::mutex> lock(mutex_);
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   if (!pool_) {
     ++aba_failures_;
     return false;
@@ -1316,7 +1316,7 @@ bool ZeroFGDeviceHandoff::Acquire(
   std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
   if (!lock.owns_lock() || failed() || !armed_.load(std::memory_order_acquire))
     return false;
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   FinalizePendingSourceLocked();
   uint64_t desired = desired_extent_.load(std::memory_order_acquire);
   if (!desired) return false;

@@ -1,6 +1,6 @@
 /**
  ******************************************************************************
- * XenDroid ZeroFG V2 Main Surface Authority egress                           *
+ * ZeroFG Independent Presenter: Main Surface Authority egress                *
  ******************************************************************************
  */
 
@@ -15,7 +15,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/platform.h"
 
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
 #include <errno.h>
 #include <poll.h>
 #include <sys/resource.h>
@@ -191,7 +191,7 @@ ZeroFGMainSurfaceEgress::ZeroFGMainSurfaceEgress(
 ZeroFGMainSurfaceEgress::~ZeroFGMainSurfaceEgress() { Stop(); }
 
 bool ZeroFGMainSurfaceEgress::Start() {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   if (started_ || stopped_ || !slot_count_ || surface_ == VK_NULL_HANDLE ||
       !device_->vkCmdPipelineBarrier2() || !device_->vkGetSemaphoreFdKHR()) {
     return started_;
@@ -254,7 +254,7 @@ bool ZeroFGMainSurfaceEgress::Start() {
 }
 
 void ZeroFGMainSurfaceEgress::Stop() {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   if (stopped_) {
     return;
   }
@@ -416,7 +416,7 @@ ZeroFGMainSurfaceEgress::Stats ZeroFGMainSurfaceEgress::SnapshotStats() const {
 }
 
 void ZeroFGMainSurfaceEgress::ThreadMain() {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   ApplyThreadPriority();
   {
     std::unique_lock<std::mutex> lock(mutex_);
@@ -446,7 +446,7 @@ void ZeroFGMainSurfaceEgress::ThreadMain() {
 }
 
 bool ZeroFGMainSurfaceEgress::CreateSwapchain() {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   const VulkanInstance::Functions& ifn =
       device_->vulkan_instance()->functions();
   const VkPhysicalDevice physical_device = device_->physical_device();
@@ -758,7 +758,7 @@ void ZeroFGMainSurfaceEgress::Serve() {
 
 bool ZeroFGMainSurfaceEgress::ServeRequest(const Request& request,
                                            bool probe) {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   if (request.slot >= slot_count_ || request.image == VK_NULL_HANDLE) {
     Fail(Failure::kSlotReuse, 0);
     Abandon(request);
@@ -1634,7 +1634,7 @@ void ZeroFGMainSurfaceEgress::Abandon(const Request& request) {
 }
 
 void ZeroFGMainSurfaceEgress::PollCopyCompletions() {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   for (uint32_t i = 0; i < slot_count_; ++i) {
     CopyContext& context = contexts_[i];
     if (!context.in_flight || context.copy_done_fd == -2) {
@@ -1892,7 +1892,7 @@ bool ZeroFGMainSurfaceEgress::AnyCopyInFlight() const {
 }
 
 void ZeroFGMainSurfaceEgress::ApplyThreadPriority() {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   // Same ladder as the presenter thread: FIFO acquire and present must not
   // lose a vertical blank to the Source's threads.
   static constexpr int kElevatedNiceLadder[] = {-20, -19, -16, -12,

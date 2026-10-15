@@ -1,10 +1,9 @@
 # The portable host kit
 
-The presenter in [`../xenia-android/`](../xenia-android/) was written inside XenDroid against a
-handful of Xenia types. This kit is small stand-ins for exactly those types, so the presenter,
-its main-surface egress and the device handoff build **unchanged** in another Android host. It is
-the step [`../xenia-android/README.md`](../xenia-android/README.md) names as next: the presenter
-behind a small host interface.
+The ZeroFG Independent Presenter in [`../presenter/`](../presenter/) was first built inside a
+Xenia-based host, against a handful of Xenia types. This kit is small stand-ins for exactly those
+types, so the presenter, its main-surface egress and the device handoff build **unchanged** in any
+Android host: the presenter behind a small host interface.
 
 ## What is in it
 
@@ -12,7 +11,7 @@ behind a small host interface.
 | --- | --- | --- |
 | `include/zerofg_host/host.h` | — | `SetLogSink`: where the presenter's log lines go |
 | `include/xenia/ui/vulkan/vulkan_device.h` | Xenia's `VulkanInstance`, `VulkanDevice` | `VulkanInstance::Wrap`, `VulkanDevice::Wrap`: its own instance and device handles, queues and enabled facts |
-| `include/xenia/base/frame_stats.h` | Xenia's frame stats (the XenDroid file, as is; BSD 3-Clause, see License) | the Source timing: call the issue and publish recorders from the frame loop |
+| `include/xenia/base/frame_stats.h` | Xenia-style frame stats (as is; BSD 3-Clause, see License) | the Source timing: call the issue and publish recorders from the frame loop |
 | `include/xenia/ui/presenter.h` | `Presenter::GuestOutputPaintConfig` | the output settings, carried unread from the paint provider to the post callback |
 | `include/xenia/base/{logging,cvar,platform}.h` | Xenia's logging, cvars, platform switches | sets `cvars::zerofg_mode` before creating the presenter |
 | `include/xenia/ui/vulkan/{vulkan_presenter,vulkan_util}.h` | three constants and four helpers | nothing |
@@ -35,7 +34,7 @@ Wrap device B (ZeroFG's own, Vulkan 1.3 with synchronization2 and timelines, plu
 AHardwareBuffer and sync-file extensions) and the game's device A (AHardwareBuffer, sync files and
 synchronization2, as an extension on an older device). Then `ZeroFGDeviceHandoff(a, b).SelfTest()`
 qualifies the path between them, and `ZeroFGIndependentPresenter::Create` takes device B and the
-callbacks of [`../xenia-android/README.md`](../xenia-android/README.md).
+callbacks of [`../presenter/README.md`](../presenter/README.md).
 
 On a device older than 1.3 the promoted entry points (synchronization2, timelines) resolve under
 their `KHR` names; everything newer than Vulkan 1.0 is optional in `VulkanDevice::Wrap`, and the
@@ -61,8 +60,8 @@ Learned bringing up the first host. The presenter does not tell you these; each 
    aspect under you (God of War II widens its picture when progressive scan goes on).
 4. **Detect the hand-back yourself.** After a failure the presenter stops its egress, releases the
    window and calls the UI-request callback; `main_surface_reconnect_requested()` covers only an
-   out-of-date surface. The host's rule, as XenDroid's normal presenter has it: you released the
-   window and `owns_final_output()` is false, so rebuild the game's swap chain on the kept surface.
+   out-of-date surface. The host's rule: you released the window and `owns_final_output()` is
+   false, so rebuild the game's swap chain on the kept surface.
    Missing it leaves a frozen last frame on screen while the game keeps running.
 5. **A presenter that failed refuses the window for good** (its Main Surface Authority session).
    To try again, destroy it and create a new one. Cap the retries.
@@ -82,16 +81,17 @@ Learned bringing up the first host. The presenter does not tell you these; each 
    (`BeginSurfaceDisconnect`, the game's device idle, `DestroySurfaceResourcesAfterSourceIdle`,
    drain) and rebuild the game's swap chain. On: `Connect` again; it qualifies the cadence again in
    about half a second. A new engine mode: off, rebuild the engine and the presenter, on.
-9. **GPU priority** for device B, as [`../xenia-android/README.md`](../xenia-android/README.md)
-   step 3 says. Without it the two devices are not isolated in time when the game saturates the
-   GPU.
+9. **GPU priority** for device B, as [`../presenter/README.md`](../presenter/README.md) step 3
+   says: `VK_KHR_global_priority` for drivers that honour it, and on Adreno with a custom Turnip the
+   KGSL context priority through adrenotools ([`../xendroid/adrenotools/`](../xendroid/adrenotools/)).
+   Without it the two devices are not isolated in time when the game saturates the GPU.
 
 ## Status
 
 First host: ARMSX2 (PS2), 2026-10-14, on a Xiaomi 25102PCBEG (Adreno 840; Turnip "Purple" T30,
 God of War II).
 - **Compiled:** the presenter, the egress, the handoff and the kit, for Android arm64 with the NDK
-  (clang 21), without one change to the files in `../xenia-android/`.
+  (clang 21), without one change to the files in `../presenter/`.
 - **Runtime validated:** the handoff self-test (PASS, no mismatches); the presenter taking the
   window from the game's swap chain; at 120 Hz a 60 fps game shown at 118-121 fps, Real and
   generated one to one, 19-32 ms from the game's issue to the screen (median); switching ZeroFG
@@ -99,11 +99,12 @@ God of War II).
 - **Observed:** with the panel held at 60 Hz (the GameManager cap above) and a 60 fps game, the
   presenter keeps generating and its Source backpressure holds the game at 30 fps. A host should
   let the user switch frame generation off there.
-- **Not done in ARMSX2 yet:** GPU priority (item 9).
+- **Compiled, not yet runtime validated:** GPU priority (item 9), the KGSL hook carried into
+  ARMSX2's adrenotools and the global priority.
 
 ## License
 
 Apache-2.0, like the rest of this repository, with one exception that keeps Xenia's BSD 3-Clause
-license ([`../xenia-android/LICENSE-Xenia`](../xenia-android/LICENSE-Xenia)):
-`include/xenia/base/frame_stats.h`, XenDroid's file from its Xenia source tree, written there by
-XenDroid's author and the ZeroFG authors. A build that ships the kit carries that notice with it.
+license ([`../xendroid/LICENSE-Xenia`](../xendroid/LICENSE-Xenia)):
+`include/xenia/base/frame_stats.h`, from XenDroid's Xenia source tree, written there by XenDroid's
+author and the ZeroFG authors. A build that ships the kit carries that notice with it.

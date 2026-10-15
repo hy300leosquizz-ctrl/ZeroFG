@@ -1,6 +1,6 @@
 # ZeroFG
 
-> Frame generation for mobile GPUs, built on Vulkan. **Version 1.0.2.**
+> Frame generation for mobile GPUs, built on Vulkan. **Version 1.0.2a.**
 
 ZeroFG takes two frames a game rendered and creates the one halfway between
 them. Shown in between, those frames double the frame rate: 60 fps becomes
@@ -96,7 +96,7 @@ Or let CMake fetch it:
 include(FetchContent)
 FetchContent_Declare(zerofg
   GIT_REPOSITORY https://github.com/hy300leosquizz-ctrl/ZeroFG.git
-  GIT_TAG v1.0.2)
+  GIT_TAG v1.0.2a)
 FetchContent_MakeAvailable(zerofg)
 target_link_libraries(my_host PRIVATE zerofg::zerofg)
 ```
@@ -123,6 +123,19 @@ presenter at all. It stays in this repository's history. 1.0 replaces all of
 it: a new motion estimator verified at full resolution, a temporal prior, an
 exposure model, a continuity guard, a new resolve, and the presenter, measured
 against ground truth in the laboratory and in play.
+
+## What's new in 1.0.2a
+
+The engine is unchanged (still 1.0.2); this release is for hosts:
+
+- **The presenter builds outside XenDroid.** [`host/portable`](host/portable/)
+  stands in for the few XenDroid types it uses, so the presenter, its egress
+  and the device handoff build unchanged in another Android host. The first one
+  is ARMSX2 (PS2): a 60 fps game shown at 120 fps on a 120 Hz phone, switched
+  on and off in game. Its README lists what a host has to do that the
+  presenter does not tell you.
+- **No Vulkan SDK needed to build.** The shaders ship compiled
+  (`shaders/prebuilt`); the SDK's tools are only needed to change them.
 
 ## What's new in 1.0.2
 

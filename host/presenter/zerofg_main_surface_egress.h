@@ -1,6 +1,6 @@
 /**
  ******************************************************************************
- * XenDroid ZeroFG V2 Main Surface Authority egress                           *
+ * ZeroFG Independent Presenter: Main Surface Authority egress                *
  ******************************************************************************
  */
 

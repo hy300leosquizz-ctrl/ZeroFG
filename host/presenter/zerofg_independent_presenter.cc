@@ -1,6 +1,6 @@
 /**
  ******************************************************************************
-* XenDroid ZeroFG V2 independent Android presenter                           *
+* ZeroFG Independent Presenter                                               *
  ******************************************************************************
  */
 
@@ -33,7 +33,7 @@
 #include "xenia/ui/vulkan/zerofg_config.h"
 #include "xenia/ui/vulkan/zerofg_main_surface_egress.h"
 
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
 #include <errno.h>
 #include <poll.h>
 #include <sys/resource.h>
@@ -50,12 +50,12 @@ namespace vulkan {
 
 ZeroFGIndependentPresenter::HandoffReadyObservation::
     ~HandoffReadyObservation() {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   if (fd >= 0) close(fd);
 #endif
 }
 uint64_t ZeroFGIndependentPresenter::HandoffReadyObservation::Observe() {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   if (first_seen_ready_ns || error) return first_seen_ready_ns;
   if (fd >= 0) {
     pollfd descriptor = {fd, POLLIN, 0};
@@ -79,7 +79,7 @@ uint64_t ZeroFGIndependentPresenter::HandoffReadyObservation::Observe() {
   return first_seen_ready_ns;
 }
 
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
 
 namespace {
 
@@ -1845,7 +1845,7 @@ struct ZeroFGIndependentPresenter::Impl {
       }
     }
     // Main Surface Authority is ZeroFG's only output: device B must be the WSI
-    // profile. Without it ZeroFG stays off (normal XenDroid presenter).
+    // profile. Without it ZeroFG stays off (the host's own presenter).
     if (!vulkan_device->is_zerofg_presenter_device()) {
       XELOGE(
           "ZeroFGMainSurface refused reason=no_main_surface_device_B "
@@ -19518,7 +19518,7 @@ ZeroFGIndependentPresenter::Create(
     PostProcessReleaseCallback post_process_release_callback,
     PostProcessShutdownCallback post_process_shutdown_callback,
     PresenterDeviceDrainCallback presenter_device_drain_callback) {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   auto impl = std::make_unique<Impl>(
       vulkan_device, elevated_presenter_priority, synthetic_cost_seed_ns,
       std::move(ingress_source_acquire_callback),
@@ -19545,7 +19545,7 @@ bool ZeroFGIndependentPresenter::Connect(void* native_window,
                                            VkExtent2D extent,
                                            VkFormat final_output_format,
                                            VkSurfaceKHR main_surface) {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   return impl_ && impl_->Connect(native_window, extent, final_output_format,
                                  main_surface);
 #else
@@ -19554,7 +19554,7 @@ bool ZeroFGIndependentPresenter::Connect(void* native_window,
 }
 
 bool ZeroFGIndependentPresenter::main_surface_handoff_pending() const {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   return impl_ && impl_->MainSurfaceHandoffPending();
 #else
   return false;
@@ -19562,7 +19562,7 @@ bool ZeroFGIndependentPresenter::main_surface_handoff_pending() const {
 }
 
 void ZeroFGIndependentPresenter::MainSurfaceReleasedByA() {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   if (impl_) {
     impl_->MainSurfaceReleasedByA();
   }
@@ -19570,7 +19570,7 @@ void ZeroFGIndependentPresenter::MainSurfaceReleasedByA() {
 }
 
 bool ZeroFGIndependentPresenter::MainSurfaceAllowsProducerA() {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   if (!impl_ || impl_->main_surface_producer.state() !=
                     ZeroFGMainSurfaceProducer::State::kB) {
     return true;
@@ -19584,7 +19584,7 @@ bool ZeroFGIndependentPresenter::MainSurfaceAllowsProducerA() {
 }
 
 void ZeroFGIndependentPresenter::NoteMainSurfaceProducedByA() {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   if (impl_) {
     impl_->NoteMainSurfaceProducedByA();
   }
@@ -19592,7 +19592,7 @@ void ZeroFGIndependentPresenter::NoteMainSurfaceProducedByA() {
 }
 
 bool ZeroFGIndependentPresenter::main_surface_reconnect_requested() const {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   return impl_ && impl_->main_surface_reconnect_requested.load(
                       std::memory_order_acquire);
 #else
@@ -19602,7 +19602,7 @@ bool ZeroFGIndependentPresenter::main_surface_reconnect_requested() const {
 
 void ZeroFGIndependentPresenter::SetMainSurfaceUIRequest(
     std::function<void()> request) {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   if (impl_) {
     std::lock_guard<std::mutex> lock(impl_->main_surface_ui_request_mutex);
     impl_->main_surface_ui_request = std::move(request);
@@ -19611,7 +19611,7 @@ void ZeroFGIndependentPresenter::SetMainSurfaceUIRequest(
 }
 
 void ZeroFGIndependentPresenter::BeginSurfaceDisconnect() {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   if (impl_) {
     impl_->BeginSurfaceDisconnect();
   }
@@ -19619,7 +19619,7 @@ void ZeroFGIndependentPresenter::BeginSurfaceDisconnect() {
 }
 
 void ZeroFGIndependentPresenter::DestroySurfaceResourcesAfterSourceIdle() {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   if (impl_) {
     impl_->DestroySurfaceResourcesAfterSourceIdle();
   }
@@ -19627,7 +19627,7 @@ void ZeroFGIndependentPresenter::DestroySurfaceResourcesAfterSourceIdle() {
 }
 
 bool ZeroFGIndependentPresenter::accepting() const {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   return impl_ && impl_->accepting.load(std::memory_order_acquire);
 #else
   return false;
@@ -19635,7 +19635,7 @@ bool ZeroFGIndependentPresenter::accepting() const {
 }
 
 bool ZeroFGIndependentPresenter::TryActivateFromNativeSourceCadence() {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   return impl_ && impl_->TryActivateFromNativeSourceCadence();
 #else
   return false;
@@ -19643,7 +19643,7 @@ bool ZeroFGIndependentPresenter::TryActivateFromNativeSourceCadence() {
 }
 
 bool ZeroFGIndependentPresenter::owns_final_output() const {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   return impl_ &&
          impl_->final_output_authority.load(std::memory_order_acquire);
 #else
@@ -19652,7 +19652,7 @@ bool ZeroFGIndependentPresenter::owns_final_output() const {
 }
 
 void ZeroFGIndependentPresenter::PublicationCommitted() {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   if (impl_) {
     impl_->PublicationCommitted();
   }
@@ -19660,7 +19660,7 @@ void ZeroFGIndependentPresenter::PublicationCommitted() {
 }
 
 void ZeroFGIndependentPresenter::ClaimPublicationAuthority() {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
   if (impl_) {
     impl_->ClaimPublicationAuthority();
   }

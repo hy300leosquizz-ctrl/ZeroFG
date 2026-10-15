@@ -1,6 +1,6 @@
 /**
  ******************************************************************************
- * XenDroid ZeroFG V2 completion/ownership layer                              *
+ * ZeroFG Independent Presenter: completion and ownership                     *
  ******************************************************************************
  */
 
@@ -15,7 +15,7 @@
 #include "xenia/base/platform.h"
 #include "xenia/ui/vulkan/vulkan_device.h"
 
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
 #include <errno.h>
 #include <poll.h>
 #include <unistd.h>
@@ -50,7 +50,7 @@ namespace vulkan {
 // For a point that holds a KGSL timestamp, Turnip passes the zero timeout to
 // IOCTL_KGSL_DEVICE_WAITTIMESTAMP_CTXTID as timeout 0, and the KGSL driver
 // waits forever on 0, so the "poll" lasts until the point retires. It runs
-// inside vkQueueSubmit, before Mesa's own queue lock, while XenDroid still
+// inside vkQueueSubmit, before Mesa's own queue lock, while the host still
 // holds the queue it acquired for the submit. Waiting on a point does no
 // cleanup.
 //
@@ -235,7 +235,7 @@ class ZeroFGCompletionOwner {
   // reports POLLIN once its fence signaled; POLLNVAL (a closed fd), POLLERR
   // and POLLHUP are errors, never readiness.
   SyncFdPoll PollSyncFd() const {
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
     if (sync_fd_ < 0) {
       return SyncFdPoll::kError;
     }
@@ -270,7 +270,7 @@ class ZeroFGCompletionOwner {
     if (sync_fd_ < 0) {
       return;
     }
-#if XE_PLATFORM_ANDROID || XE_PLATFORM_xendroid
+#if XE_PLATFORM_ANDROID
     close(sync_fd_);
 #endif
     sync_fd_ = -1;

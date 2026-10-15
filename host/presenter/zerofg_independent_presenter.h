@@ -1,6 +1,6 @@
 /**
  ******************************************************************************
- * XenDroid ZeroFG V2 independent Android presenter                           *
+ * ZeroFG Independent Presenter                                                *
  ******************************************************************************
  */
 
@@ -22,7 +22,7 @@ namespace vulkan {
 
 // The independent presenter owns immutable Real candidates, optional Synthetic
 // candidates and a bounded final-output pool. Real and Synthetic converge
-// before XenDroid's normal spatial presentation pipeline. This presenter never
+// before the host's normal output pipeline. This presenter never
 // owns or calls the normal Vulkan swapchain / WSI path.
 class ZeroFGIndependentPresenter final {
  public:
@@ -208,7 +208,7 @@ class ZeroFGIndependentPresenter final {
   using GenerationShutdownCallback = std::function<void()>;
 
 // Invoked only by the dedicated ZeroFG output thread. The callback records
-  // and submits XenDroid's normal spatial presentation pipeline, then returns
+  // and submits the host's normal output pipeline, then returns
   // immediately after queue acceptance. Completion is observed separately;
 // the immutable candidate remains owned by the presenter throughout the GPU read.
   struct PostProcessRequest {

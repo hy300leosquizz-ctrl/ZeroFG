@@ -1,7 +1,7 @@
 // Copyright 2026 ZeroFG authors. SPDX-License-Identifier: Apache-2.0
 //
-// The Source -> device B handoff (host/xenia-android/zerofg_device_handoff.inc),
-// built as its own translation unit: in XenDroid it is included by Xenia's
+// The Source -> device B handoff (host/presenter/zerofg_device_handoff.inc),
+// built as its own translation unit: a Xenia-based host includes it in its
 // vulkan_presenter.cc inside xe::ui::vulkan, after the headers below.
 
 #include <algorithm>

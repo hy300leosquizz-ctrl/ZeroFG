@@ -1,9 +1,9 @@
 // Copyright 2026 ZeroFG authors. SPDX-License-Identifier: Apache-2.0
 //
 // The portable host kit: what a host gives the ZeroFG presenter besides its
-// Vulkan handles. The presenter was written inside XenDroid against a few
-// Xenia types; the headers under include/xenia/ are small stand-ins for
-// exactly those, so the presenter builds unchanged in another host.
+// Vulkan handles. The presenter was first built inside a Xenia-based host
+// against a few Xenia types; the headers under include/xenia/ are small
+// stand-ins for exactly those, so the presenter builds unchanged in any host.
 #ifndef ZEROFG_PORTABLE_HOST_H_
 #define ZEROFG_PORTABLE_HOST_H_
 

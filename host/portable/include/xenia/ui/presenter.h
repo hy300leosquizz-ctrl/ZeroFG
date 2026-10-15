@@ -11,7 +11,7 @@
 #include <memory>
 
 // The ZeroFG presenter's header reaches the Source timing types through this
-// one, as it does in XenDroid.
+// one, as it does in a Xenia-based host.
 #include "xenia/base/frame_stats.h"
 
 namespace xe {

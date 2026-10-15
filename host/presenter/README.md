@@ -1,16 +1,15 @@
-# The ZeroFG presenter (reference host: XenDroid on Android)
+# The ZeroFG Independent Presenter
 
 The engine makes frames; the presenter turns that into frame generation. It
 decides which real frames to keep, when to generate, when each output is shown,
 and in what order, and it carries every frame from the game's GPU device to the
-screen. This folder is the presenter exactly as it ships in
-[XenDroid-ZeroFG 1.0.2](https://github.com/hy300leosquizz-ctrl/XenDroid-ZeroFG),
-about 25,000 lines.
+screen, on ZeroFG's own Vulkan device. About 25,000 lines, Android.
 
-It is a reference, not a library: it builds inside XenDroid-ZeroFG and depends
-on parts of XenDroid listed below. Read it to see how every problem in
-[INTEGRATION.md](../../INTEGRATION.md) was solved for real, and port the pieces
-your host needs.
+It builds in any Android host through [`../portable/`](../portable/), which
+stands in for the few Xenia-shaped types it includes. Two hosts run it:
+XenDroid (Xbox 360, [`../xendroid/`](../xendroid/)) and ARMSX2 (PS2). Read it
+to see how every problem in [INTEGRATION.md](../../INTEGRATION.md) was solved
+for real.
 
 ## The files
 
@@ -21,20 +20,7 @@ your host needs.
 | `zerofg_device_handoff.h/.inc` | Moving each real frame from the game's Vulkan device to ZeroFG's (Android hardware buffers and sync files) |
 | `zerofg_completion_owner.h` | Proving GPU completion without ever blocking (timelines and sync files) |
 | `zerofg_build_guard.h` | Surviving a driver that crashes compiling ZeroFG's pipelines: a marker around each build, Compat at the next launch, off after a second crash, per driver and app build |
-| `vulkan_presenter_zerofg_device_context.inc` | Creating ZeroFG's own Vulkan device and its output pipelines |
-| `vulkan_presenter_zerofg_source_adapter.inc` | Publishing each finished game frame to the presenter |
-| `zerofg_config.h` | The user settings (mode: off, zero, reallyzero; the game frame rate cap) and the flag that says the presenter is live, which the guest pacing reads |
-| `zerofg_xenia_adapter.h/.cc` | The thin wrapper XenDroid uses around `zerofg::Interpolator` |
-| `adrenotools/kgsl-context-priority.patch` | GPU priority for ZeroFG's device on Adreno: the change to XenDroid's libadrenotools (a hook that sets the KGSL priority of the contexts a custom driver creates) and to `vulkan_device.cc`/`vulkan_instance.cc` that uses it ([README](adrenotools/README.md)) |
-| `xendroid_glue/guest-pacing.patch` | Guest pacing, in XenDroid's GPU code (command processor, vblank limiter, PM4 wait): a vblank probe learns the address a game waits on for its flip, a frame already late for it gets its vblank at once (the vblank it replaces is skipped, so the game never speeds up), and the game frame rate cap holds swaps at least 1/limit apart. Both only while the presenter is live |
-| `xendroid_glue/vulkan_presenter_zerofg_glue.cc` | The other half: the callbacks inside XenDroid's own presenter that record a Generation, run the normal output pipeline on a frame (the Post) and hand the surface over |
-
-The rest of the integration lives inside XenDroid's own presenter
-(`vulkan_presenter.cc`, a Xenia file). Its ZeroFG functions are copied in
-`xendroid_glue/` as an excerpt: `ProcessZeroFGGeneration` and
-`PollZeroFGGeneration` record and watch a generation, `ProcessZeroFGPost` runs
-the normal output pipeline on a frame, and the surface functions hand the
-screen over.
+| `zerofg_config.h` | The user settings (mode: off, zero, reallyzero; the game frame rate cap) and the flag that says the presenter is live, which a host's guest pacing reads |
 
 ## How it is driven
 
@@ -66,43 +52,43 @@ device:
 sure the game's presenter and ZeroFG never produce into the screen at the same
 time.
 
-## What it needs from XenDroid
+## What it needs from a host
 
-| Dependency | Used for | To port it |
+It includes a few Xenia-shaped headers; [`../portable/`](../portable/) provides
+all of them, so a host supplies only what the right-hand column says.
+
+| Dependency | Used for | What the host gives |
 | --- | --- | --- |
-| `xenia/ui/vulkan/vulkan_device.h` | ZeroFG's own device: creation profile, function table, enabled features, queue access under a lock | your device wrapper |
-| `xenia/ui/presenter.h` | the output settings type (`GuestOutputPaintConfig`) | your output settings |
-| `xenia/base/frame_stats.h` | when each game frame was issued and published, the game's frame rate | timestamps from your frame loop |
-| `xenia/base/logging.h`, `xenia/base/cvar.h`, `xenia/base/platform.h` | logs, settings, platform switches | your logger and settings |
-| `emulator.h` (XenDroid's Android host) | nothing (an include left over; drop it) | — |
+| `xenia/ui/vulkan/vulkan_device.h` | ZeroFG's own device: creation profile, function table, enabled features, queue access under a lock | its instance and device handles (`VulkanDevice::Wrap`) |
+| `xenia/ui/presenter.h` | the output settings type (`GuestOutputPaintConfig`) | its output settings |
+| `xenia/base/frame_stats.h` | when each game frame was issued and published, the game's frame rate | timestamps from its frame loop |
+| `xenia/base/logging.h`, `xenia/base/cvar.h`, `xenia/base/platform.h` | logs, settings, platform switches | a log sink and the mode |
+| `emulator.h` | nothing (an include left over) | — |
 | Android: `AHardwareBuffer`, sync files, `ANativeWindow`, `VK_GOOGLE_display_timing` | moving frames between devices, presenting, reading when frames reached the screen | the same on Android; equivalents elsewhere |
 
 ## Porting it to another host
 
 1. **Add the engine** to your build (see [INTEGRATION.md](../../INTEGRATION.md)).
 2. **Give ZeroFG its own Vulkan device** on the same GPU, with a queue that can
-   present, Vulkan 1.3 and synchronization2. `vulkan_presenter_zerofg_device_context.inc`
-   shows what XenDroid enables.
+   present, Vulkan 1.3 and synchronization2.
+   `../xendroid/vulkan_presenter_zerofg_device_context.inc` shows what XenDroid
+   enables.
 3. **Give that device GPU priority** over the game's. On Adreno with a custom
-   Turnip driver, apply `adrenotools/kgsl-context-priority.patch` (or the same
-   idea in your driver loader); elsewhere use `VK_KHR_global_priority` if the
-   driver honours it.
-4. **Replace the XenDroid types** in the table above with yours: the device
-   wrapper, the output settings, the frame timestamps, the logger and the
-   settings.
+   Turnip driver, apply the idea of `../xendroid/adrenotools/kgsl-context-priority.patch`
+   in your driver loader; elsewhere use `VK_KHR_global_priority` if the driver
+   honours it.
+4. **Build it with [`../portable/`](../portable/)**, and wrap your devices.
 5. **Publish your frames**: call `PublicationCommitted` when a game frame is
    finished, and answer `IngressSourceAcquireCallback` with it.
-6. **Implement the callbacks** following `xendroid_glue/`: a Generation records
+6. **Implement the callbacks**: a Generation records
    `zerofg::Interpolator::Interpolate` and submits it; a Post runs your own
-   output pipeline.
+   output pipeline (`../xendroid/xendroid_glue/` has XenDroid's).
 7. **Hand the screen over** with `Connect` and the surface methods, so your
    presenter and ZeroFG never present at the same time.
 
-Step 4, and the build, are done by [`../portable/`](../portable/): stand-ins for
-the XenDroid types, so the presenter builds outside XenDroid unchanged. Its
-README lists what a host still has to do that the presenter does not tell you
-(activation, one size per connection, the hand-back, the refresh rate), learned
-bringing up ARMSX2.
+The kit's README lists what a host still has to do that the presenter does not
+tell you (activation, one size per connection, the hand-back, the refresh
+rate), learned bringing up ARMSX2.
 
 ## The rules it keeps
 
@@ -149,7 +135,7 @@ Origins, Modern Warfare 3):
 - **Better D's references.** A need sample uses its pair's own quantum (a
   reanchor can change the global one inside the window), and a pair counts as
   late against the rate lock's period, not a stale regime period.
-- **Guest pacing** (`xendroid_glue/guest-pacing.patch`): the vblank pull and
+- **Guest pacing** (`../xendroid/xendroid_glue/guest-pacing.patch`): the vblank pull and
   the game frame rate cap, acting only while the presenter is connected and has
   not failed open. A cap pays in a game that keeps the GPU at 100 %: Modern
   Warfare 3 at 40 keeps ~80 fps on screen with 55 ms of lag instead of 70 and
@@ -164,7 +150,7 @@ Origins, Modern Warfare 3):
 Latency and the cadence of a game below 30 fps, from the 1.1 work, measured in
 play on the Adreno 840:
 
-- **Two game frames in flight, not three.** This lives in XenDroid's command
+- **Two game frames in flight, not three.** This lives in the XenDroid host's command
   processor (`frames_in_flight_limit_`), not here: with GPU priority the third
   frame only queued a frame more of latency and let the period lock at 20 fps
   under stalls (37-90 ms on two against 80-540 on three).
@@ -185,14 +171,8 @@ play on the Adreno 840:
 - **The fail-open drain polls the capture transfers,** so the handback
   completes: Halo 3 froze on ZeroFG's last frame after the engine refused its
   picture size.
-- **The build guard** (`zerofg_build_guard.h`, used in `xendroid_glue/`).
+- **The build guard** (`zerofg_build_guard.h`, used in `../xendroid/xendroid_glue/`).
 
 ## License
 
-Apache-2.0, like the rest of this repository, with two exceptions that keep
-Xenia's BSD 3-Clause license ([LICENSE-Xenia](LICENSE-Xenia)):
-`vulkan_presenter_zerofg_device_context.inc`, adapted from Xenia's presenter, and
-`xendroid_glue/vulkan_presenter_zerofg_glue.cc`, an excerpt of it. The
-adrenotools patch changes libadrenotools, which keeps its BSD 2-Clause license;
-`xendroid_glue/guest-pacing.patch` changes Xenia files, which keep theirs.
-The XenDroid and Xenia files it depends on keep their own licenses.
+Apache-2.0, like the rest of this repository.

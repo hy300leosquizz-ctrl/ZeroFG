@@ -1,5 +1,5 @@
-# The portable host kit: builds the ZeroFG presenter of host/xenia-android,
-# unchanged, outside XenDroid, as the static library `zerofg_host`
+# The portable host kit: builds the ZeroFG Independent Presenter of
+# host/presenter, unchanged, in any Android host, as the static library `zerofg_host`
 # (zerofg::host). Android only: the presenter moves frames as AHardwareBuffers
 # with sync files and presents on an ANativeWindow.
 #
@@ -26,7 +26,7 @@ endif()
 # The presenter includes its own headers as xenia/ui/vulkan/zerofg_*.h, so they
 # are staged under that path. configure_file re-runs the configure when one
 # changes.
-set(_zerofg_host_reference "${CMAKE_CURRENT_SOURCE_DIR}/../xenia-android")
+set(_zerofg_host_reference "${CMAKE_CURRENT_SOURCE_DIR}/../presenter")
 set(_zerofg_host_stage "${CMAKE_CURRENT_BINARY_DIR}/stage")
 foreach(_file
     zerofg_build_guard.h

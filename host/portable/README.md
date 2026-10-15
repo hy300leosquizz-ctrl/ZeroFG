@@ -12,7 +12,7 @@ behind a small host interface.
 | --- | --- | --- |
 | `include/zerofg_host/host.h` | — | `SetLogSink`: where the presenter's log lines go |
 | `include/xenia/ui/vulkan/vulkan_device.h` | Xenia's `VulkanInstance`, `VulkanDevice` | `VulkanInstance::Wrap`, `VulkanDevice::Wrap`: its own instance and device handles, queues and enabled facts |
-| `include/xenia/base/frame_stats.h` | Xenia's frame stats (the XenDroid file, as is) | the Source timing: call the issue and publish recorders from the frame loop |
+| `include/xenia/base/frame_stats.h` | Xenia's frame stats (the XenDroid file, as is; BSD 3-Clause, see License) | the Source timing: call the issue and publish recorders from the frame loop |
 | `include/xenia/ui/presenter.h` | `Presenter::GuestOutputPaintConfig` | the output settings, carried unread from the paint provider to the post callback |
 | `include/xenia/base/{logging,cvar,platform}.h` | Xenia's logging, cvars, platform switches | sets `cvars::zerofg_mode` before creating the presenter |
 | `include/xenia/ui/vulkan/{vulkan_presenter,vulkan_util}.h` | three constants and four helpers | nothing |
@@ -100,3 +100,10 @@ God of War II).
   presenter keeps generating and its Source backpressure holds the game at 30 fps. A host should
   let the user switch frame generation off there.
 - **Not done in ARMSX2 yet:** GPU priority (item 9).
+
+## License
+
+Apache-2.0, like the rest of this repository, with one exception that keeps Xenia's BSD 3-Clause
+license ([`../xenia-android/LICENSE-Xenia`](../xenia-android/LICENSE-Xenia)):
+`include/xenia/base/frame_stats.h`, XenDroid's file from its Xenia source tree, written there by
+XenDroid's author and the ZeroFG authors. A build that ships the kit carries that notice with it.

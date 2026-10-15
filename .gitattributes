@@ -1,0 +1,2 @@
+# The shipped SPIR-V is compared byte for byte with what the build generates (LF).
+shaders/prebuilt/** text eol=lf

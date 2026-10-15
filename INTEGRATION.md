@@ -25,8 +25,8 @@ FetchContent_MakeAvailable(zerofg)
 target_link_libraries(my_host PRIVATE zerofg::zerofg)
 ```
 
-(or `add_subdirectory` on a copy). You need Python 3 and the Vulkan SDK's
-`glslangValidator` and `spirv-opt` at build time; see the README.
+(or `add_subdirectory` on a copy). The shaders ship compiled, so the build
+needs only the Vulkan headers; see the README.
 
 ## 1. Create
 

@@ -72,9 +72,14 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-This builds the static library `zerofg` (alias `zerofg::zerofg`). You need
-Python 3, plus `glslangValidator` and `spirv-opt` from the Vulkan SDK (set
-`VULKAN_SDK`, or put both on `PATH`). The Vulkan headers come from
+This builds the static library `zerofg` (alias `zerofg::zerofg`). The shaders
+ship compiled (`shaders/prebuilt`), so a host needs no shader tools. With
+Python 3, `glslangValidator` and `spirv-opt` from the Vulkan SDK (set
+`VULKAN_SDK`, or put both on `PATH`) they are compiled from `shaders/rc3`
+instead; `-DZEROFG_PREBUILT_SHADERS=ON|OFF` forces one or the other. After
+changing a shader, build `zerofg_update_prebuilt_shaders` and commit
+`shaders/prebuilt` with it (`zerofg_check_prebuilt_shaders` fails while they
+differ). The Vulkan headers come from
 `find_package(Vulkan)`, or from `-DZEROFG_VULKAN_HEADERS_DIR=<dir>`; with the
 Android NDK toolchain, the NDK's own headers are used. The library never links
 a Vulkan loader: every entry point comes from the `vkGetInstanceProcAddr` you

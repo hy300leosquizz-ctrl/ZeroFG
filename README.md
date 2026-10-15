@@ -1,6 +1,6 @@
 # ZeroFG
 
-> Frame generation for mobile GPUs, built on Vulkan. **Version 1.0.2a.**
+> Frame generation for mobile GPUs, built on Vulkan. **Version 1.0.3.**
 
 ZeroFG takes two frames a game rendered and creates the one halfway between
 them. Shown in between, those frames double the frame rate: 60 fps becomes
@@ -11,8 +11,8 @@ This repository has everything we built to make that work on a phone:
 - **the engine** (`include/`, `src/`, `shaders/`): records the GPU work that
   generates a frame into a command buffer you give it. It owns no queue and no
   timing, so it fits into any Vulkan host;
-- **the presenter** (`host/xenia-android/`): the part that turns the engine
-  into frame generation on a real device. It captures the game's frames,
+- **the presenter** (`host/presenter/`, the ZeroFG Independent Presenter): the
+  part that turns the engine into frame generation on a real device. It captures the game's frames,
   paces generation, keeps real frames in order and presents on the screen
   without ever slowing the game. This is where most of the work went;
 - **the integration notes** ([INTEGRATION.md](INTEGRATION.md)): how to bring
@@ -96,14 +96,14 @@ Or let CMake fetch it:
 include(FetchContent)
 FetchContent_Declare(zerofg
   GIT_REPOSITORY https://github.com/hy300leosquizz-ctrl/ZeroFG.git
-  GIT_TAG v1.0.2a)
+  GIT_TAG v1.0.3)
 FetchContent_MakeAvailable(zerofg)
 target_link_libraries(my_host PRIVATE zerofg::zerofg)
 ```
 
 Built and checked on Windows (clang, llvm-mingw) and Android (NDK r29,
-arm64-v8a). The presenter in `host/` is a reference: it builds inside
-XenDroid-ZeroFG, and its README lists what it needs from there.
+arm64-v8a). The presenter builds in any Android host through
+[`host/portable`](host/portable/), whose README lists what a host has to do.
 
 ZeroFG has been runtime-validated in games on one device (Adreno 840); the
 Adreno 650 is additionally qualified in the laboratory.
@@ -124,23 +124,26 @@ it: a new motion estimator verified at full resolution, a temporal prior, an
 exposure model, a continuity guard, a new resolve, and the presenter, measured
 against ground truth in the laboratory and in play.
 
-## What's new in 1.0.2a
+## What's new in 1.0.3
 
-The engine is unchanged (still 1.0.2); this release is for hosts:
+The engine is unchanged (the same as 1.0.2); this release is for hosts:
 
-- **The presenter builds outside XenDroid.** [`host/portable`](host/portable/)
-  stands in for the few XenDroid types it uses, so the presenter, its egress
-  and the device handoff build unchanged in another Android host. The first one
-  is ARMSX2 (PS2): a 60 fps game shown at 120 fps on a 120 Hz phone, switched
-  on and off in game. Its README lists what a host has to do that the
-  presenter does not tell you.
+- **The presenter is ZeroFG's own.** The ZeroFG Independent Presenter lives in
+  [`host/presenter`](host/presenter/), and [`host/portable`](host/portable/)
+  stands in for the few Xenia-shaped types it includes, so the presenter, its
+  egress and the device handoff build unchanged in any Android host.
+  XenDroid's own integration moved to [`host/xendroid`](host/xendroid/), as an
+  example host.
+- **A second host: ARMSX2 (PS2).** A 60 fps game shown at 120 fps on a 120 Hz
+  phone, switched on and off in game. The kit's README lists what a host has
+  to do that the presenter does not tell you.
 - **No Vulkan SDK needed to build.** The shaders ship compiled
   (`shaders/prebuilt`); the SDK's tools are only needed to change them.
 
 ## What's new in 1.0.2
 
 The engine is unchanged; this release is the reference host's pacing
-([details](host/xenia-android/README.md#what-changed-in-102)):
+([details](host/presenter/README.md#what-changed-in-102)):
 
 - **The output follows the game's real rate.** The presenter's clock follows
   the average of the game's last frames, measured without the time the game
@@ -153,7 +156,7 @@ The engine is unchanged; this release is the reference host's pacing
 - **Guest pacing in the emulator host**: a late game frame gets its vblank at
   once, and a game frame rate cap gives a GPU-bound game's frame generation
   room to work (Modern Warfare 3 at 40: the same ~80 fps on screen, 70 -> 55 ms
-  of lag). A patch to XenDroid's GPU code, in `host/xenia-android/xendroid_glue/`.
+  of lag). A patch to XenDroid's GPU code, in `host/xendroid/xendroid_glue/`.
 
 ## What's new in 1.0.1
 
@@ -161,7 +164,7 @@ The engine is unchanged; this release is the reference host's pacing
   the presentation can run a few refreshes ahead to drain accumulated delay,
   the game's wait for its own GPU no longer counts as backpressure, and the
   pre-priority operating point is off
-  ([details](host/xenia-android/README.md#what-changed-in-101)).
+  ([details](host/presenter/README.md#what-changed-in-101)).
 - **Any picture size.** A picture the cell grid does not divide runs padded to
   the next one it does (Halo 3, 1152 x 640); a tiled picture is bit-identical
   to 1.0.
@@ -188,8 +191,10 @@ AI-generated analysis, designs, code and documentation are engineering inputs. F
 Licensed under the **Apache License, Version 2.0** (`Apache-2.0`). See
 [`LICENSE`](LICENSE).
 
-Two reference files in `host/xenia-android/` come from Xenia and keep its BSD
-3-Clause license ([`LICENSE-Xenia`](host/xenia-android/LICENSE-Xenia)):
+Three files keep Xenia's BSD 3-Clause license
+([`LICENSE-Xenia`](host/xendroid/LICENSE-Xenia)): in `host/xendroid/`,
 `vulkan_presenter_zerofg_device_context.inc` (adapted from Xenia's presenter)
-and `xendroid_glue/vulkan_presenter_zerofg_glue.cc` (an excerpt of it). A
-provenance check found no code shared with Xenia or XenDroid in any other file.
+and `xendroid_glue/vulkan_presenter_zerofg_glue.cc` (an excerpt of it); and
+`host/portable/include/xenia/base/frame_stats.h`, from XenDroid's Xenia source
+tree. A provenance check found no code shared with Xenia or XenDroid in any
+other file.

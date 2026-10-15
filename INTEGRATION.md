@@ -3,8 +3,8 @@
 This page is for anyone putting ZeroFG into a Vulkan host. The whole public API
 is [`include/zerofg/zerofg.h`](include/zerofg/zerofg.h) and
 [`include/zerofg/backend_capabilities.h`](include/zerofg/backend_capabilities.h).
-Everything below runs for real in the presenter in [`host/xenia-android/`](host/xenia-android/),
-the one that ships in [XenDroid-ZeroFG](https://github.com/hy300leosquizz-ctrl/XenDroid-ZeroFG).
+Everything below runs for real in the ZeroFG Independent Presenter
+([`host/presenter/`](host/presenter/)), in XenDroid-ZeroFG and in ARMSX2.
 When a step here says what to do, that code shows how we did it.
 
 ## The contract in one paragraph
@@ -20,7 +20,7 @@ never submits, never waits and never presents.
 include(FetchContent)
 FetchContent_Declare(zerofg
   GIT_REPOSITORY https://github.com/hy300leosquizz-ctrl/ZeroFG.git
-  GIT_TAG v1.0.2a)
+  GIT_TAG v1.0.3)
 FetchContent_MakeAvailable(zerofg)
 target_link_libraries(my_host PRIVATE zerofg::zerofg)
 ```
@@ -185,7 +185,7 @@ XenDroid-ZeroFG:
   its frames continuous. Offer a frame rate cap too: a game that keeps the GPU
   at 100 % leaves frame generation no room, and capping it a little below its
   usual rate gives the same output with less lag
-  ([host/xenia-android/xendroid_glue/guest-pacing.patch](host/xenia-android/xendroid_glue/guest-pacing.patch)).
+  ([host/xendroid/xendroid_glue/guest-pacing.patch](host/xendroid/xendroid_glue/guest-pacing.patch)).
 - **Don't let the display slow the game.** If presentation blocks (a busy
   compositor, a system frame cap), show fewer generated frames rather than
   making the game wait.
@@ -196,7 +196,7 @@ XenDroid-ZeroFG:
   pacing can make clumps smooth. Run ZeroFG on its own queue or device at a
   higher priority than the game's (`VK_KHR_global_priority` where the driver
   honours it). On Adreno with Turnip's KGSL backend the driver ignores it, but
-  the kernel does not: [host/xenia-android/adrenotools](host/xenia-android/adrenotools/)
+  the kernel does not: [host/xendroid/adrenotools](host/xendroid/adrenotools/)
   sets the priority of the contexts the driver creates. In XenDroid-ZeroFG
   this took a saturated Arkham City from frames in bursts (a copy of 8 ms
   waiting 40 to 170 ms) to every generated frame on screen, evenly. Under GPU

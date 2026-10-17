@@ -1,6 +1,6 @@
 # ZeroFG
 
-> Frame generation for mobile GPUs, built on Vulkan. **Version 1.0.3.**
+> Frame generation for mobile GPUs, built on Vulkan. **Version 1.0.4.**
 
 ZeroFG takes two frames a game rendered and creates the one halfway between
 them. Shown in between, those frames double the frame rate: 60 fps becomes
@@ -96,7 +96,7 @@ Or let CMake fetch it:
 include(FetchContent)
 FetchContent_Declare(zerofg
   GIT_REPOSITORY https://github.com/hy300leosquizz-ctrl/ZeroFG.git
-  GIT_TAG v1.0.3)
+  GIT_TAG v1.0.4)
 FetchContent_MakeAvailable(zerofg)
 target_link_libraries(my_host PRIVATE zerofg::zerofg)
 ```
@@ -123,6 +123,33 @@ presenter at all. It stays in this repository's history. 1.0 replaces all of
 it: a new motion estimator verified at full resolution, a temporal prior, an
 exposure model, a continuity guard, a new resolve, and the presenter, measured
 against ground truth in the laboratory and in play.
+
+## What's new in 1.0.4
+
+The engine is unchanged; this release is the presenter's pacing, from the
+hosts that cannot pull their game's frames
+([details](host/presenter/README.md#what-changed-in-104)):
+
+- **Phase recovery.** A game on its own clock (an emulator's frame limiter,
+  not one the host can pull) no longer drifts the output calendar away from it.
+  Before, at 30 -> 60 that drift showed as uneven 1-3 refresh pairs, a
+  generated frame next to its real one. The presenter now measures the game's
+  period from its frame times. It brings a calendar that fell behind back to a
+  small cushion above the depth it needs, and drains one far ahead through the
+  rate, without skipping anything.
+- **Measured** on the Adreno 840 in PPSSPP (PSP), ARMSX2 (PS2) and XenDroid
+  (Xbox 360):
+  - a PSP game at 30 -> 60 is back to even pairs;
+  - a PS2 game shows its frames about 13 ms sooner;
+  - an Xbox 360 game under a 30 fps cap went from 38 % to 79-89 % of intervals
+    at two refreshes.
+- **Pacing tools for hosts.** Every host differs: who sets the frame clock, the
+  copy, what else is on the screen. Pacing has to be measured again on each
+  one. The presenter's switches are now settings a host can change after
+  measuring: phase recovery, the free output, the vsync quantizer and an
+  optional tight vsync reach, which is off by default. The
+  [presenter README](host/presenter/README.md#tuning-a-hosts-pacing) lists them
+  with how to measure.
 
 ## What's new in 1.0.3
 

@@ -13,7 +13,7 @@ Android host: the presenter behind a small host interface.
 | `include/xenia/ui/vulkan/vulkan_device.h` | Xenia's `VulkanInstance`, `VulkanDevice` | `VulkanInstance::Wrap`, `VulkanDevice::Wrap`: its own instance and device handles, queues and enabled facts |
 | `include/xenia/base/frame_stats.h` | Xenia-style frame stats (as is; BSD 3-Clause, see License) | the Source timing: call the issue and publish recorders from the frame loop |
 | `include/xenia/ui/presenter.h` | `Presenter::GuestOutputPaintConfig` | the output settings, carried unread from the paint provider to the post callback |
-| `include/xenia/base/{logging,cvar,platform}.h` | Xenia's logging, cvars, platform switches | sets `cvars::zerofg_mode` before creating the presenter |
+| `include/xenia/base/{logging,cvar,platform}.h` | Xenia's logging, cvars, platform switches | sets `cvars::zerofg_mode` before creating the presenter, and the pacing tools only after measuring ([presenter README](../presenter/README.md#tuning-a-hosts-pacing)) |
 | `include/xenia/ui/vulkan/{vulkan_presenter,vulkan_util}.h` | three constants and four helpers | nothing |
 | `include/emulator.h` | an include the presenter leaves unused | nothing |
 

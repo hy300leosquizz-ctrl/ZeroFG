@@ -11,6 +11,13 @@
 DEFINE_bool(zerofg_frame_generation, false, "", "ZeroFG");
 DEFINE_string(zerofg_mode, "off", "", "ZeroFG");
 DEFINE_uint32(zerofg_fps_limit, 0, "", "ZeroFG");
+// Pacing tools (host/presenter/README.md, "Tuning a host's pacing"). The
+// defaults are the ones measured in play on three hosts; a host changes one
+// only after measuring its own output.
+DEFINE_bool(zerofg_phase_recovery, true, "", "ZeroFG");
+DEFINE_bool(zerofg_free_output, true, "", "ZeroFG");
+DEFINE_bool(zerofg_vsync_quantizer, true, "", "ZeroFG");
+DEFINE_bool(zerofg_vsync_tight_reach, false, "", "ZeroFG");
 
 namespace zerofg_host {
 

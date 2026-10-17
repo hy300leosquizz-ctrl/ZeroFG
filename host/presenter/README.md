@@ -106,6 +106,92 @@ These took most of the two months, and each has a measured reason behind it:
 - **Fail open.** Any structural failure hands the screen back to the host's
   normal path for the rest of the session.
 
+## Tuning a host's pacing
+
+Measure the pacing again for every new host. Hosts differ in ways the
+presenter cannot see:
+
+- **Who sets the frame clock.** The host may pull the game's frames
+  (XenDroid's guest vblank pull), or an emulator's own frame limiter may set
+  it (PPSSPP, ARMSX2).
+- **The copy.** ZeroFG's device may have one queue or two, so the final copy
+  can be slow or fast.
+- **The screen.** Other layers can update above the game, and the system may
+  cap the app's frame rate (HyperOS throttles to 90 or 60 Hz when hot).
+
+The defaults below are the ones measured in play on three hosts. Each tool is
+a setting from `zerofg_config.h` that the host sets before it creates the
+presenter. [`../portable/`](../portable/) defines them; a host with its own
+settings system defines them itself.
+
+| Setting | Default | What it does | When to change it |
+| --- | --- | --- | --- |
+| `zerofg_phase_recovery` | on | Keeps the output calendar on the game's own clock (see 1.0.4 below). | Off only for an A/B. Without it, a game on its own clock drifts the calendar into uneven 1-3 refresh pairs at 30 -> 60. |
+| `zerofg_vsync_quantizer` | on | Gives each output a refresh of its own, in order, the first one its copy can make. | Off only for an A/B. Without it, two outputs can meet in one refresh and only the newest is shown. |
+| `zerofg_free_output` | on | Never waits for the screen. It learns the system's frame cap from how long its own presents sleep and drops the oldest output, not the game's speed. | Off only for an A/B. |
+| `zerofg_vsync_tight_reach` | **off** | Optional. The first refresh an output can make is bound by two deadlines instead of their sum: queued one refresh plus 2 ms ahead, and copied 1.5 ms ahead (an unsignaled latch). Past 5 % late presents among those only it placed, it switches itself off for the session. | Try it when the copy is slow (one queue, the copy behind Generation) and the game's layer updates alone on the screen. In XenDroid 6-14 % of the presents only it placed came back late. On PPSSPP and ARMSX2 it held (0-3 % late) but no latency gain was measured. |
+| `zerofg_fps_limit` | 0 (off) | A cap on the game's frame rate, for a host that paces the game through ZeroFG. | A game whose own rate the screen cannot double. |
+| `SetPublishDepth` (handoff) | 1 | Publications that may wait for ZeroFG's device before `Publish` blocks. | A game that runs ahead of its GPU. |
+
+How to measure, before and after any change:
+
+- **The screen's own record.** `adb shell dumpsys SurfaceFlinger --latency
+  '<your SurfaceView layer>'` gives the times the last ~128 frames were shown.
+  Each interval, in refreshes, should be 1 at 60 -> 120 and 2 at 30 -> 60.
+  Uneven 1-3 pairs mean the calendar is behind. Game Turbo-style overlays
+  count the frames that reached the screen. A ZeroFG overlay built on the
+  applied counter counts the frames sent to it.
+- **`ZeroFGPacing`.** The lattice and rate lock periods, the excess (how far
+  committed frames sit from Better D's depth), and phase recovery's reference
+  period, spread and recoveries (frequency, lag, drain).
+- **`ZeroFGMainSurface` summary.** Applied against presented frames,
+  `desired_to_actual`, the actual interval distribution, vsync hit/late,
+  `tight_only/late`, and `present_limiter`. An engaged limiter with a period
+  of ~11.1 ms is a 90 Hz system cap, not a pacing defect.
+- **`ZeroFGPhaseCInvariants`.** It must stay 0.
+
+Better D's depth is not a tool. Its margin is the measured tail of the
+generated frame's post completion, and cutting it 4 ms took generated frames
+from 1.7 to 12 % late in God of War II.
+
+## What changed in 1.0.4
+
+Phase recovery, found on the hosts that cannot pull their game's frames
+(PPSSPP, ARMSX2) and measured in play on the Adreno 840 (PPSSPP Naruto
+Shippuden: Ultimate Ninja Impact and God of War: Ghost of Sparta, ARMSX2
+Resident Evil 4 and God of War II, XenDroid Rayman Origins and Batman: Arkham
+City under a 30 fps cap):
+
+- **The calendar stays on the game's clock.** Under the rate lock the 3 % dead
+  band could keep a period a little short, and nothing pulled a calendar that
+  fell behind back to the game. A game on its own clock then drifted it away:
+  PPSSPP Naruto at 30 reached -1.4 s, with every generated frame shown next to
+  its real one (uneven 1-3 refresh pairs at 30 -> 60). The game's period is now
+  measured from the issue times of committed real frames: the median slope
+  between frames half of a 256-frame window apart, trusted when its spread is
+  within 0.3 %, else the regime estimate while it agrees with the lock's own
+  period within 3 %. That period is the one frequency authority, and the
+  lock's own excess correction yields to it. A pair period off by more than
+  max(0.3 %, four times the spread), at most 1.5 %, is reinstalled.
+- **Phase, with a cushion.** Over 4 s of the epoch's real frames, both halves
+  agreeing, a calendar shallower than Better D's depth (a quantum short at one
+  output per refresh) is moved back a cushion of max(O/4, 2 ms) above it. One
+  more than two cushions deep drains through the rate down to one: at most 2 %
+  a pair, over 64 pairs. Each change is a future-only reanchor, so nothing
+  already committed moves, nothing is skipped and the real frames keep their
+  order.
+- **Measured.**
+  - PPSSPP Naruto at 30 -> 60: 2 2 again.
+  - ARMSX2 RE4: about 13 ms less from the game's frame to its target, with 0-3 %
+    of generated frames late.
+  - PPSSPP Ghost of Sparta: the reanchor storm of a noisy rate lock gone.
+  - XenDroid Arkham under a 30 cap: 79-89 % of intervals at two refreshes,
+    from 38 %.
+  - Invariants 0 throughout.
+- **Kept.** Better D's depth: cutting it 4 ms takes generated frames from 1.7
+  to 12 % late in God of War II. Its margin is the tail of the generated
+  frame's post completion.
+
 ## What changed in 1.0.2
 
 Pacing, from the 1.1 work, measured in play on the Adreno 840 (Halo 3, Rayman

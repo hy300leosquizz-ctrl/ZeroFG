@@ -1,0 +1,56 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The search ends: the biggest surface first (the label a point without evidence falls back on), the still surface last, and the order of the layers: the smaller in front, the biggest at the back.
+#include "rc7_common.glsl"
+#include "rc7_search.glsl"
+layout(local_size_x = 1) in;
+
+const vec4 IDENT[3] = vec4[3](vec4(1.0, 0.0, 0.0, 0.0), vec4(0.0, 1.0, 0.0, 0.0), vec4(0.0, 0.0, 1.0, 0.0));
+
+void main() {
+  int found = s_found;
+  if (found == 0) {
+    for (int r = 0; r < 3; ++r) {
+      s_H[r] = IDENT[r];
+      s_Hi[r] = IDENT[r];
+      s_Mid[r] = IDENT[r];
+    }
+    s_size[0] = 1;
+    found = 1;
+  }
+  // Insertion by size, biggest first: at most five.
+  for (int a = 1; a < found; ++a) {
+    int b = a;
+    while (b > 0 && s_size[b - 1] < s_size[b]) {
+      int t = s_size[b];
+      s_size[b] = s_size[b - 1];
+      s_size[b - 1] = t;
+      for (int r = 0; r < 3; ++r) {
+        int p = b * 3 + r, o = (b - 1) * 3 + r;
+        vec4 v = s_H[p];
+        s_H[p] = s_H[o];
+        s_H[o] = v;
+        v = s_Hi[p];
+        s_Hi[p] = s_Hi[o];
+        s_Hi[o] = v;
+        v = s_Mid[p];
+        s_Mid[p] = s_Mid[o];
+        s_Mid[o] = v;
+      }
+      --b;
+    }
+  }
+  for (int r = 0; r < 3; ++r) {
+    s_H[found * 3 + r] = IDENT[r];
+    s_Hi[found * 3 + r] = IDENT[r];
+    s_Mid[found * 3 + r] = IDENT[r];
+  }
+  s_size[found] = 0;
+  int planes = found + 1;
+  s_planes = planes;
+  // The still surface has no size: the first of the order. Then the smallest up.
+  int order[6] = int[6](found, 0, 0, 0, 0, 0);
+  for (int k = 0; k < found; ++k) order[k + 1] = found - 1 - k;
+  s_order = ivec4(order[0], order[1], order[2], order[3]);
+  s_order2 = ivec4(order[4], order[5], 0, 0);
+}

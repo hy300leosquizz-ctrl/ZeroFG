@@ -1,0 +1,124 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+// df: the DIS inverse search, SEVERAL PATCHES PER 64-WIDE WAVE (the mobile form). On the Adreno the 64-wide forms pay a fixed cost per
+// patch (one wave each: launch, preamble, the uniform walk), measured at about 1.3 ms of the patch search's 1.7-2.0 ms at 720p with no
+// iteration at all; here LANES lanes carry one 8 x 8 patch, so the waves are 64 / LANES times fewer for the same arithmetic. The sums
+// run inside each aligned group of LANES lanes by shuffle-xor (offsets below LANES never leave the group). The same steps and decisions
+// as df_patch_sg: inverse-compositional Gauss-Newton on mean-normalised patches, from the level's flow at the patch centre, and a patch
+// that ends worse than it started keeps its start.
+// ZFG_DF_LANES: 16 (the default: four patches per wave, each lane a 2 x 2 block) or 8 (eight patches, each lane a 4 x 2 block).
+// pc.a = (w, h, 0, 0), pc.b = (patches x, patches y, flow offset, 8), pc.c = (S, iterations, 1 for both directions in one dispatch, direction).
+// pc.p = (1: standing still is a start too, 1: last pair's answer is a start too, this level's size over the finest's, what a new start must cost at most against the level's flow).
+// Dispatch: (ceil(patches / (64 / LANES)), 1, 2); needs a subgroup that holds whole groups of LANES (64 on the devices that run it).
+#define DF_LEVEL_SIZE(T) ivec2(pc.a.x, pc.a.y)
+#include "df_common.glsl"
+layout(local_size_x = 64) in;
+
+#ifndef ZFG_DF_LANES
+#define ZFG_DF_LANES 16
+#endif
+const uint LANES = ZFG_DF_LANES;
+const int NPX = 64 / ZFG_DF_LANES;                 // pixels per lane
+const int BW = ZFG_DF_LANES == 16 ? 2 : 4;          // the lane's block: BW x 2
+const uint LX = 8u / uint(BW);                      // lanes across the patch
+
+
+vec4 sum_group(vec4 v) {
+  v += subgroupShuffleXor(v, 1u);
+  v += subgroupShuffleXor(v, 2u);
+  v += subgroupShuffleXor(v, 4u);
+  if (LANES == 16u) v += subgroupShuffleXor(v, 8u);
+  return v;
+}
+
+// A start's cost over half the patch: mean-normalised, as the check at the end of the search.
+float start_cost(bool i1b, int bx, int by, vec2 u, float T[NPX]) {
+  vec4 s = vec4(0.0);
+  for (int q = 0; q < NPX; q += 2) {
+    float e = tex_bil(i1b, float(bx + q % BW) + u.x, float(by + q / BW) + u.y) - T[q];
+    s += vec4(e, e * e, 0.0, 0.0);
+  }
+  vec4 t = sum_group(s);
+  return t.y - t.x * t.x / 32.0;
+}
+
+void main() {
+  int nx = pc.b.x, ny = pc.b.y;
+  uint lane = gl_SubgroupInvocationID & (LANES - 1u);
+  int p = int(gl_WorkGroupID.x) * int(64u / LANES) + int(gl_LocalInvocationID.x / LANES);
+  bool live = p < nx * ny;   // uniform over its group; a dead group still runs the shuffles
+  int pp = live ? p : 0;
+  int i = pp % nx, j = pp / nx;
+  int w = pc.a.x, h = pc.a.y, S = pc.c.x;
+  const int P = 8;
+  int x0 = max(0, min(i * S, w - P)), y0 = max(0, min(j * S, h - P));
+  int bx = x0 + BW * int(lane % LX), by = y0 + 2 * int(lane / LX);   // the lane's block
+  bool zd = pc.c.z != 0;
+  int d = DF_DIR;
+  int fo = pc.b.z + (zd ? d * w * h : 0), pb = zd ? d * nx * ny : 0;
+  bool i0b = d != 0, i1b = !i0b;
+  float T[NPX], ax[NPX], ay[NPX];
+  vec4 s0 = vec4(0.0);
+  for (int q = 0; q < NPX; ++q) {
+    int px = bx + q % BW, py = by + q / BW;
+    T[q] = tex_at(i0b, px, py);
+    ax[q] = 0.5 * (tex_at(i0b, px + 1, py) - tex_at(i0b, px - 1, py));
+    ay[q] = 0.5 * (tex_at(i0b, px, py + 1) - tex_at(i0b, px, py - 1));
+    s0 += vec4(T[q], ax[q], ay[q], 0.0);
+  }
+  vec4 m = sum_group(s0) / 64.0;
+  vec4 s1 = vec4(0.0);
+  for (int q = 0; q < NPX; ++q) {
+    ax[q] -= m.y;
+    ay[q] -= m.z;
+    s1 += vec4(ax[q] * ax[q], ax[q] * ay[q], ay[q] * ay[q], 0.0);
+  }
+  vec4 hs = sum_group(s1);
+  float det = hs.x * hs.z - hs.y * hs.y;
+  float cx = float(x0) + 3.5, cy = float(y0) + 3.5;
+  vec2 u0 = flow_bil(fo, w, h, cx, cy);
+  if (pc.p.x != 0.0 || pc.p.y != 0.0) {
+    float best = start_cost(i1b, bx, by, u0, T) * pc.p.w;
+    vec2 pick = u0;
+    if (pc.p.x != 0.0) {
+      float c = start_cost(i1b, bx, by, vec2(0.0), T);
+      pick = c < best ? vec2(0.0) : pick;
+      best = c < best ? c : best;
+    }
+    if (pc.p.y != 0.0) {
+      // B of the last pair is A of this one: its field, turned around, sits on this very picture; on B it is the same motion, a pair later.
+      vec2 last = textureLod(flowT1, (vec2(cx, cy) + 0.5) / vec2(w, h), 0.0).rg * pc.p.z * (d == 0 ? -1.0 : 1.0);
+      float c = start_cost(i1b, bx, by, last, T);
+      pick = c < best ? last : pick;
+    }
+    u0 = pick;
+  }
+  vec2 u = u0;
+  if (det > 1e-3) {
+    float ixx = hs.z / det, ixy = -hs.y / det, iyy = hs.x / det;
+    for (int it = 0; it < pc.c.y; ++it) {
+      vec4 sb = vec4(0.0);
+      for (int q = 0; q < NPX; ++q) {
+        float e = tex_bil(i1b, float(bx + q % BW) + u.x, float(by + q / BW) + u.y) - T[q];
+        sb += vec4(ax[q] * e, ay[q] * e, 0.0, 0.0);
+      }
+      vec4 b = sum_group(sb);
+      vec2 du = vec2(ixx * b.x + ixy * b.y, ixy * b.x + iyy * b.y);
+      vec2 nu = u - du;
+      if (abs(nu.x - u0.x) > 16.0 || abs(nu.y - u0.y) > 16.0) { u = u0; break; }
+      u = nu;
+      if (dot(du, du) < 1e-4) break;
+    }
+    vec4 sd = vec4(0.0);
+    for (int q = 0; q < NPX; ++q) {
+      float fx = float(bx + q % BW), fy = float(by + q / BW);
+      float d0 = tex_bil(i1b, fx + u0.x, fy + u0.y) - T[q];
+      float d1 = tex_bil(i1b, fx + u.x, fy + u.y) - T[q];
+      sd += vec4(d0, d0 * d0, d1, d1 * d1);
+    }
+    vec4 s = sum_group(sd);
+    if (s.w - s.z * s.z / 64.0 > s.y - s.x * s.x / 64.0) u = u0;
+  }
+  if (live && lane == 0u) pflow[pb + j * nx + i] = u;
+}

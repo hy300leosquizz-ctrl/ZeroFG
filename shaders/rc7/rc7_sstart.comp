@@ -1,0 +1,23 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The search starts: every cell is still to explain, nothing is found. The gates' floor until they are measured.
+#include "rc7_common.glsl"
+#include "rc7_search.glsl"
+layout(local_size_x = 1) in;
+
+void main() {
+  int cells_n = cellCount();
+  for (int w = 0; w < 128; ++w) {
+    int left = cells_n - w * 32;
+    s_rest[w] = left >= 32 ? 0xffffffffu : left <= 0 ? 0u : (1u << left) - 1u;
+    s_claim[w] = 0u;
+  }
+  s_found = 0;
+  s_stop = 0;
+  s_inliers = 0;
+  for (int k = 0; k < 8; ++k) {
+    s_size[k] = 0;
+    s_detail[k] = 0;
+    s_same[k] = 0;
+  }
+}

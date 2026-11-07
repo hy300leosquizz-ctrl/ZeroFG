@@ -1,0 +1,68 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// What exists in each block of the picture, so that the composition skips what does not. pc.a.x = 0: clear both copies; 1: mark, from one picture's points (pc.a.y the side); 2: widen by a block, what the
+// marks do not say exactly (a sample's filter, the fine step, the guided matte's window). Bits: 0 the front, 1 + k the surface k, 8 the screen, 9 + side where that picture's front matte is, in the picture's own place, 11 the screen likewise. pc.a.x = 3: each group of the picture into the list of its class; 4: their dispatches, one lane.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void mark(vec2 middle, uint bits) {
+  if (!insideP(middle)) return;
+  ivec2 t = ivec2(middle) / TILE;
+  atomicOr(tiles[t.y * tileW() + t.x], bits);
+}
+
+void markPlace(vec2 pos, uint bits) {
+  ivec2 t = min(ivec2(pos) / TILE, ivec2(tileW() - 1, tileH() - 1));
+  atomicOr(tiles[t.y * tileW() + t.x], bits);
+}
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  int mode = pc.a.x, tw = tileW(), th = tileH();
+  if (mode == 3) {
+    int gw = (W + 7) / 8, gh = (H_ + 7) / 8;
+    if (q.x >= gw || q.y >= gh) return;
+    // A group is a quarter of a block. One surface and nothing else in it: that surface's short render.
+    uint bits = tiles[tw * th + (q.y / 2) * tw + q.x / 2] & 0x1ffu, surfaces = bits & 0x7eu;
+    int c = 6;
+    if (bits == surfaces && surfaces != 0u && (surfaces & (surfaces - 1u)) == 0u) c = findLSB(surfaces) - 1;
+    uint at = atomicAdd(r_count[c], 1u);
+    f_list[uint(2 * ln()) + uint(c * gw * gh) + at] = uint(q.x) | (uint(q.y) << 16);
+    return;
+  }
+  if (mode == 4) {
+    if (gl_GlobalInvocationID != uvec3(0u)) return;
+    for (int c = 0; c < 7; ++c) r_args[c] = uvec4(r_count[c], 1u, 1u, 0u);
+    return;
+  }
+  if (mode == 0) {
+    if (q.x >= tw || q.y >= th) return;
+    tiles[q.y * tw + q.x] = 0u;
+    tiles[tw * th + q.y * tw + q.x] = 0u;
+    return;
+  }
+  if (mode == 2) {
+    if (q.x >= tw || q.y >= th) return;
+    uint bits = 0u;
+    for (int b = -1; b <= 1; ++b)
+      for (int a = -1; a <= 1; ++a) {
+        ivec2 t = q + ivec2(a, b);
+        if (t.x >= 0 && t.y >= 0 && t.x < tw && t.y < th) bits |= tiles[t.y * tw + t.x];
+      }
+    tiles[tw * th + q.y * tw + q.x] = bits;
+    return;
+  }
+  if (q.x >= LW || q.y >= LH) return;
+  int side = pc.a.y, p = q.y * LW + q.x;
+  vec2 pos = latCentre(q);
+  float front_alpha = plan[planOf(P_ALPHA, side, p)];
+  if (front_alpha > 0.0005) mark(pos + 0.5 * front[frontOf(0, side, p)], 1u);
+  if (front_alpha > 0.0) markPlace(pos, 512u << side);
+  for (int k = 0; k < PLANES; ++k)
+    if (palpha[alphaOf(side, k, p)] > 0.0005) mark(0.5 * (pos + surfaceGo(side, k, pos)), 2u << k);
+  if (side == 0) {
+    float screen = plan[planOf(P_HUD, 0, p)];
+    if (screen > 0.0005) mark(pos, 256u);
+    if (screen > 0.0) markPlace(pos, 2048u);
+  }
+}

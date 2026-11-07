@@ -1,0 +1,49 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// A matte follows its own picture's edges: a guided filter's two numbers per lattice point; at the render alpha = a * luma + b, with that very pixel's luma. pc.a.x = side.
+// All the mattes of one picture at once: the window's lumas are the same for all of them, and an empty matte adds nothing, so each point reads only the mattes that exist there.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (q.x >= LW || q.y >= LH) return;
+  int side = THIS_SIDE, r = max(2, int(u.judge1.z) / S), st = (R_OPTS & 2048) != 0 ? r : max(1, r / 2), p = q.y * LW + q.x;
+  float si = 0.0, sii = 0.0, n = 0.0;
+  float sp[7] = float[7](0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+  float sip[7] = float[7](0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+  bool small_soft = THIS_KIND != 0;
+  for (int b = -r; b <= r; b += st)
+    for (int a = -r; a <= r; a += st) {
+      ivec2 t = clamp(q + ivec2(a, b), ivec2(0), ivec2(LW - 1, LH - 1));
+      int m = t.y * LW + t.x;
+      float luma = dot(small_soft ? sampleSoft(side, latCentre(t)) : sampleReal(side, latCentre(t)), LUMA);
+      si += luma;
+      sii += luma * luma;
+      n += 1.0;
+      uint present = uint(plan[planOf(P_PRESENT, side, m)]);
+      if (present == 0u) continue;
+      if ((present & 1u) != 0u) {
+        float alpha = plan[planOf(P_ALPHA, side, m)];
+        sp[0] += alpha;
+        sip[0] += luma * alpha;
+      }
+      for (int k = 0; k < 6; ++k)
+        if ((present & (2u << k)) != 0u) {
+          float alpha = palpha[alphaOf(side, k, m)];
+          sp[k + 1] += alpha;
+          sip[k + 1] += luma * alpha;
+        }
+    }
+  si /= n;
+  sii /= n;
+  float below = max(0.0, sii - si * si) + u.judge1.w;
+  for (int k = -1; k < 6; ++k) {
+    if (k >= PLANES) break;
+    float mean_p = sp[k + 1] / n, mean_ip = sip[k + 1] / n;
+    float slope = (mean_ip - si * mean_p) / below;
+    imageStore(guideOut, ivec3(q, side * (PLANES + 1) + k + 1), vec4(slope, mean_p - slope * si, 0.0, 0.0));
+  }
+}

@@ -1,0 +1,23 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The background's colours around each place: the mean over a block of what is neither raw matte nor screen. One invocation per block of pc.a.y lattice points. pc.a.x: the side.
+#include "rc7_common.glsl"
+layout(local_size_x = 4, local_size_y = 4) in;
+
+void main() {
+  int side = THIS_SIDE, size = pc.a.y;
+  ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+  int gw = (LW + size - 1) / size, gh = (LH + size - 1) / size;
+  if (g.x >= gw || g.y >= gh) return;
+  vec3 sum = vec3(0.0);
+  float n = 0.0;
+  for (int j = 0; j < size; j += 2)
+    for (int i = 0; i < size; i += 2) {
+      ivec2 t = g * size + ivec2(i, j), inner = min(t, ivec2(LW - 1, LH - 1));
+      int p = inner.y * LW + inner.x;
+      float raw = plan[planOf(P_RAW, side, p)], screen = plan[planOf(P_HUD, 0, p)], counts = all(bvec3(t == inner, raw <= 0.5, screen <= 0.5)) ? 1.0 : 0.0;
+      sum += counts * sampleReal(side, latCentre(t));
+      n += counts;
+    }
+  blocks[side * gw * gh + g.y * gw + g.x] = vec4(n > 0.0 ? sum / n : vec3(0.0), n);
+}

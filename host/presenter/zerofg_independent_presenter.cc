@@ -927,6 +927,7 @@ struct ZeroFGIndependentPresenter::Impl {
     uint32_t display_aspect_ratio_x = 0;
     uint32_t display_aspect_ratio_y = 0;
     bool is_8bpc = false;
+    bool content_break = false;  // the host marked this Real as the start of a new scene
     uint64_t ready_time_ns = 0;
     uint64_t transfer_signal_value = 0;
     uint64_t transfer_submit_time_ns = 0;
@@ -976,6 +977,7 @@ struct ZeroFGIndependentPresenter::Impl {
     uint32_t display_aspect_ratio_x = 0;
     uint32_t display_aspect_ratio_y = 0;
     bool is_8bpc = false;
+    bool content_break = false;
     uint32_t ingress_context_index = UINT32_MAX;
   };
 
@@ -1950,6 +1952,7 @@ struct ZeroFGIndependentPresenter::Impl {
     slot.display_aspect_ratio_x = 0;
     slot.display_aspect_ratio_y = 0;
     slot.is_8bpc = false;
+    slot.content_break = false;
     slot.ingress_context_index = UINT32_MAX;
     slot.state.store(CaptureState::kFree, std::memory_order_release);
   }
@@ -2695,6 +2698,7 @@ struct ZeroFGIndependentPresenter::Impl {
     capture.display_aspect_ratio_x = source.display_aspect_ratio_x;
     capture.display_aspect_ratio_y = source.display_aspect_ratio_y;
     capture.is_8bpc = source.is_8bpc;
+    capture.content_break = source.content_break;
     capture.ingress_context_index = context_index;
 
     const uint32_t mailbox_index = source.mailbox_index;
@@ -2910,6 +2914,7 @@ struct ZeroFGIndependentPresenter::Impl {
     slot.display_aspect_ratio_x = 0;
     slot.display_aspect_ratio_y = 0;
     slot.is_8bpc = false;
+    slot.content_break = false;
     slot.ready_time_ns = 0;
     slot.transfer_signal_value = 0;
     slot.transfer_submit_time_ns = 0;
@@ -5799,6 +5804,7 @@ struct ZeroFGIndependentPresenter::Impl {
     slot.display_aspect_ratio_x = 0;
     slot.display_aspect_ratio_y = 0;
     slot.is_8bpc = false;
+    slot.content_break = false;
     slot.ready_time_ns = 0;
     slot.transfer_signal_value = 0;
     slot.transfer_submit_time_ns = 0;
@@ -5932,6 +5938,7 @@ struct ZeroFGIndependentPresenter::Impl {
     capture.display_aspect_ratio_x = 0;
     capture.display_aspect_ratio_y = 0;
     capture.is_8bpc = false;
+    capture.content_break = false;
     capture.ingress_context_index = UINT32_MAX;
     capture.state.store(CaptureState::kFree, std::memory_order_release);
   }
@@ -6077,6 +6084,7 @@ struct ZeroFGIndependentPresenter::Impl {
     residency.display_aspect_ratio_x = capture.display_aspect_ratio_x;
     residency.display_aspect_ratio_y = capture.display_aspect_ratio_y;
     residency.is_8bpc = capture.is_8bpc;
+    residency.content_break = capture.content_break;
     residency.ingress_context_index = capture.ingress_context_index;
     residency.transfer_signal_value = signal_value;
     if (capture.ingress_context_index < ingress_copy_contexts.size()) {
@@ -17421,7 +17429,13 @@ struct ZeroFGIndependentPresenter::Impl {
       bool h1c_transition_real_only = false;
       bool h1c_postconfirm_quarantined = false;
       uint32_t synthetic_logical = UINT32_MAX;
-      if (history_slot >= kPoolSize) {
+      if (history_slot >= kPoolSize || current.content_break) {
+        // A content break (a cut, a menu, a fade through black) is handled like a first Real: B is published alone and no pair spans it. The core's
+        // temporal prior then restarts by itself, because the pair after it starts at B and the last pair the core ran ended at an older Real.
+        if (current.content_break && history_slot < kPoolSize) {
+          ++content_break_total;
+          XELOGI("ZeroFGContentBreak source={} total={}", current_source_id, content_break_total);
+        }
         RecordSyntheticDrop(SyntheticDropReason::kNoHistory);
       } else {
         const Slot& previous = slots[history_slot];
@@ -19923,6 +19937,7 @@ struct ZeroFGIndependentPresenter::Impl {
   uint64_t accepted_gap_b_phase_excess_max_ns = 0;
   uint64_t consecutive_pair_b_phase_excess_max_ns = 0;
   uint64_t structural_timing_failure_total = 0;
+  uint64_t content_break_total = 0;
   bool source_rate_transition_reanchor_pending = false;
   bool source_rate_transition_slower_pending = false;
   uint64_t source_real_only_validation_fail_total = 0;

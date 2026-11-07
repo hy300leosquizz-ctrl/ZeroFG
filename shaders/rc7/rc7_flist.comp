@@ -1,0 +1,20 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The matte's points as a list, one per lane, for the front's passes. pc.a.x: 0 listed by picture (pc.a.y the side), every point in its own lane; 1 the dispatch arguments, one lane.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  if (pc.a.x == 1) {
+    if (gl_GlobalInvocationID != uvec3(0u)) return;
+    f_args[0] = uvec4((f_count[0] + 63u) / 64u, 1u, 1u, 0u);
+    f_args[1] = uvec4((f_count[1] + 63u) / 64u, 1u, 1u, 0u);
+    return;
+  }
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (q.x >= LW || q.y >= LH) return;
+  int side = pc.a.y;
+  if (plan[planOf(P_MASK, side, q.y * LW + q.x)] < 0.5) return;
+  uint at = atomicAdd(f_count[side], 1u);
+  f_list[uint(side * ln()) + at] = uint(q.x) | (uint(q.y) << 16);
+}

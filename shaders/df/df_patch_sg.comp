@@ -1,0 +1,61 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+// df: DIS inverse search with one SUBGROUP per 8 x 8 patch (the Modern form: requires a subgroup of exactly 64 invocations, the workgroup). Every
+// invocation receives the full sums from subgroupAdd and updates the translation itself: no shared memory. The same arithmetic as
+// df_patch.comp: inverse-compositional Gauss-Newton of the patch translation on mean-normalised patches, from the level's flow at the patch centre,
+// and a patch that ends worse than it started keeps its start.
+// pc.a = (w, h, luma offset I0, luma offset I1), pc.b = (patches x, patches y, flow offset, 8), pc.c = (S, iterations, 1 for both directions in
+// one dispatch (the direction is the group's z, pc.b.z the offset of direction 0, each direction its own half of pflow), direction: 1 when I0 is B).
+// The lumas come from the level's textures (hardware bilinear). Dispatch: (nx, ny) groups.
+#include "df_common.glsl"
+layout(local_size_x = 64) in;
+
+// The barrier is a no-op for a one-subgroup workgroup, but the AMD proprietary compiler (Vega, 26.5.2) returns wrong sums from subgroupAdd in this
+// shader without one (gow_1x -0.44 dB, the iterations nearly void); with it the result matches the workgroup form and the time stays.
+vec4 sum64(vec4 v, uint t) {
+  barrier();
+  return subgroupAdd(v);
+}
+
+void main() {
+  uint t = gl_LocalInvocationID.x;
+  int i = int(gl_WorkGroupID.x), j = int(gl_WorkGroupID.y);
+  int nx = pc.b.x, ny = pc.b.y;
+  if (i >= nx || j >= ny) return;   // uniform over the group
+  int w = pc.a.x, h = pc.a.y, S = pc.c.x;
+  const int P = 8;
+  int x0 = max(0, min(i * S, w - P)), y0 = max(0, min(j * S, h - P));
+  int px = x0 + int(t % 8u), py = y0 + int(t / 8u);
+  bool zd = pc.c.z != 0;
+  int d = zd ? int(gl_WorkGroupID.z) : pc.c.w;
+  int fo = pc.b.z + (zd ? d * w * h : 0), pb = zd ? d * nx * ny : 0;
+  bool i0b = d != 0, i1b = !i0b;
+  float T = tex_at(i0b, px, py);
+  float gx = 0.5 * (tex_at(i0b, px + 1, py) - tex_at(i0b, px - 1, py));
+  float gy = 0.5 * (tex_at(i0b, px, py + 1) - tex_at(i0b, px, py - 1));
+  vec4 m = sum64(vec4(T, gx, gy, 0.0), t) / 64.0;
+  float ax = gx - m.y, ay = gy - m.z;
+  vec4 hs = sum64(vec4(ax * ax, ax * ay, ay * ay, 0.0), t);
+  float det = hs.x * hs.z - hs.y * hs.y;
+  float cx = float(x0) + 3.5, cy = float(y0) + 3.5;
+  vec2 u0 = flow_bil(fo, w, h, cx, cy);
+  vec2 u = u0;
+  if (det > 1e-3) {
+    float ixx = hs.z / det, ixy = -hs.y / det, iyy = hs.x / det;
+    for (int it = 0; it < pc.c.y; ++it) {
+      float e = tex_bil(i1b, float(px) + u.x, float(py) + u.y) - T;
+      vec4 b = sum64(vec4(ax * e, ay * e, 0.0, 0.0), t);
+      vec2 du = vec2(ixx * b.x + ixy * b.y, ixy * b.x + iyy * b.y);
+      vec2 nu = u - du;
+      if (abs(nu.x - u0.x) > 16.0 || abs(nu.y - u0.y) > 16.0) { u = u0; break; }
+      u = nu;
+      if (dot(du, du) < 1e-4) break;
+    }
+    float d0 = tex_bil(i1b, float(px) + u0.x, float(py) + u0.y) - T;
+    float d1 = tex_bil(i1b, float(px) + u.x, float(py) + u.y) - T;
+    vec4 q = sum64(vec4(d0, d0 * d0, d1, d1 * d1), t);
+    if (q.w - q.z * q.z / 64.0 > q.y - q.x * q.x / 64.0) u = u0;
+  }
+  if (t == 0u) pflow[pb + j * nx + i] = u;
+}

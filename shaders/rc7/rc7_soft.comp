@@ -1,0 +1,33 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The softened Reals: a box of radius soft_r, in two dimensions. pc.a.x: the side. With laysmall the copy has the lattice's size and everyone on the lattice reads it, not the whole picture: each point is the
+// mean of the box around it, in 3 x 3 bilinear fetches.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  int side = THIS_SIDE, r = int(u.cell.w);
+  ivec2 size = side == 0 ? imageSize(softOutA) : imageSize(softOutB);
+  if (q.x >= size.x || q.y >= size.y) return;
+  vec3 sum = vec3(0.0);
+  float n = 0.0;
+  if (size.x == W) {
+    for (int b = -r; b <= r; ++b)
+      for (int a = -r; a <= r; ++a) {
+        ivec2 t = clamp(q + ivec2(a, b), ivec2(0), ivec2(W - 1, H_ - 1));
+        sum += (side == 0 ? texelFetch(realA, t, 0) : texelFetch(realB, t, 0)).rgb;
+        n += 1.0;
+      }
+  } else {
+    vec2 centre = (vec2(q) + 0.5) * sizeF() / vec2(size);
+    float part = max(float(2 * r + 1), float(S)) / 3.0;
+    for (int b = -1; b <= 1; ++b)
+      for (int a = -1; a <= 1; ++a) {
+        sum += sampleReal(side, centre + vec2(float(a), float(b)) * part);
+        n += 1.0;
+      }
+  }
+  if (side == 0) imageStore(softOutA, q, vec4(sum / n, 1.0));
+  else imageStore(softOutB, q, vec4(sum / n, 1.0));
+}

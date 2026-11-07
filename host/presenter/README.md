@@ -154,6 +154,14 @@ Better D's depth is not a tool. Its margin is the measured tail of the
 generated frame's post completion, and cutting it 4 ms took generated frames
 from 1.7 to 12 % late in God of War II.
 
+## What changed in 1.1
+
+- **The host's scene cuts.** `IngressSourcePublication::content_break` marks a
+  published frame as the start of a new scene (ARMSX2 sets it from the GS: the
+  frame shares few textures with the one before). The presenter carries the
+  mark with the frame and generates nothing across it: the cut is shown as the
+  game drew it, Real to Real.
+
 ## What changed in 1.0.4
 
 Phase recovery, found on the hosts that cannot pull their game's frames

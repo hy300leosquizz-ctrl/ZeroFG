@@ -1,0 +1,36 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Does the vector come back from the other picture, softened over the 3 x 3. pc.a.x: the side; the fields are in flip 0.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (q.x >= LW || q.y >= LH) return;
+  int side = pc.a.x, p = q.y * LW + q.x;
+  // Most of the lattice has no matte around, and a wave with none leaves here; for the others, no branch per neighbour.
+  float masks = 0.0;
+  for (int b = -1; b <= 1; ++b)
+    for (int a = -1; a <= 1; ++a) {
+      ivec2 t = clamp(q + ivec2(a, b), ivec2(0), ivec2(LW - 1, LH - 1));
+      masks = max(masks, plan[planOf(P_MASK, side, t.y * LW + t.x)]);
+    }
+  if (masks < 0.5) {
+    plan[planOf(P_CONS, side, p)] = 0.0;
+    return;
+  }
+  float sum = 0.0, weight = 0.0;
+  for (int b = -1; b <= 1; ++b)
+    for (int a = -1; a <= 1; ++a) {
+      ivec2 t = q + ivec2(a, b), inner = clamp(t, ivec2(0), ivec2(LW - 1, LH - 1));
+      bool here = t == inner;
+      float tap = float(2 - abs(a)) * float(2 - abs(b));
+      weight += here ? tap : 0.0;
+      int m = inner.y * LW + inner.x;
+      vec2 v = front[frontOf(0, side, m)];
+      int o = latIndex(latCentre(inner) + v);
+      float mine = plan[planOf(P_MASK, side, m)], theirs = plan[planOf(P_MASK, 1 - side, o)], back = length(v + front[frontOf(0, 1 - side, o)]);
+      sum += all(bvec4(here, mine >= 0.5, theirs >= 0.5, back < u.th2.w)) ? tap : 0.0;
+    }
+  plan[planOf(P_CONS, side, p)] = sum / weight;
+}

@@ -1,0 +1,16 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The raw matte: what every surface fails on the sharp picture and also on the soft one (a grain that does not repeat is no object). pc.a.x: the side.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (q.x >= LW || q.y >= LH) return;
+  int side = pc.a.x, p = q.y * LW + q.x;
+  float bg = plan[planOf(P_BG, side, p)], gate_here = u.gate[side], low = plan[planOf(P_SOFT, side, p)];
+  float screen = plan[planOf(P_HUD, 0, p)], textured = stat[statOf(1, side, p)], wrong = stat[statOf(2, side, p)];
+  bool grain = low < u.th1.x * gate_here && (textured < u.th0.y || low < u.th0.z * wrong);
+  bool raw = all(bvec4(bg >= 0.0, bg > gate_here, screen < 0.5, !grain));
+  plan[planOf(P_RAW, side, p)] = raw ? 1.0 : 0.0;
+}

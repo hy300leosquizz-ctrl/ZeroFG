@@ -1,0 +1,109 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The trials, each in its own lane: three samples make an affine motion, four a plane in perspective; the score is how many samples agree. All of them at once: the two kinds in their own dispatches (pc.a.y: 1 the planes),
+// since a wave with both kinds would run both paths.
+#include "rc7_common.glsl"
+#include "rc7_search.glsl"
+layout(local_size_x = 64) in;
+
+uint seed;
+int pick(int n) {
+  seed = seed * 1664525u + 1013904223u;
+  return int((seed >> 8) % uint(n));
+}
+
+bool solve8(inout float m[72]) {
+  for (int c = 0; c < 8; ++c) {
+    int pivot = c;
+    for (int r = c + 1; r < 8; ++r)
+      if (abs(m[r * 9 + c]) > abs(m[pivot * 9 + c])) pivot = r;
+    if (abs(m[pivot * 9 + c]) < 1e-6) return false;
+    if (pivot != c)
+      for (int j = c; j < 9; ++j) {
+        float t = m[c * 9 + j];
+        m[c * 9 + j] = m[pivot * 9 + j];
+        m[pivot * 9 + j] = t;
+      }
+    float d = 1.0 / m[c * 9 + c];
+    for (int r = 0; r < 8; ++r) {
+      if (r == c) continue;
+      float f = m[r * 9 + c] * d;
+      if (f == 0.0) continue;
+      for (int j = c; j < 9; ++j) m[r * 9 + j] -= f * m[c * 9 + j];
+    }
+  }
+  return true;
+}
+
+void main() {
+  int i = int(gl_GlobalInvocationID.x) + (pc.a.y != 0 ? HYP_AFFINE : 0);
+  if (i >= (pc.a.y != 0 ? HYP_AFFINE + HYP_PLANE : HYP_AFFINE)) return;
+  s_hyp[i * 3 + 2] = vec4(0.0, 0.0, 1.0, -1.0);
+  if (s_stop != 0) return;
+  int n = s_sample_n;
+  if (n <= 0) return;
+  seed = 12345u + uint(i) * 7919u + uint(s_found) * 104729u + uint(pc.a.x) * 65537u;
+  vec4 r0, r1, r2 = vec4(0.0, 0.0, 1.0, 0.0);
+  if (i < HYP_AFFINE) {
+    vec4 a = s_sample[pick(n)], b = s_sample[pick(n)], c = s_sample[pick(n)];
+    float d = a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y);
+    if (abs(d) < 0.02) return;
+    d = 1.0 / d;
+    r0 = vec4((a.z * (b.y - c.y) + b.z * (c.y - a.y) + c.z * (a.y - b.y)) * d, (a.z * (c.x - b.x) + b.z * (a.x - c.x) + c.z * (b.x - a.x)) * d,
+              (a.z * (b.x * c.y - c.x * b.y) + b.z * (c.x * a.y - a.x * c.y) + c.z * (a.x * b.y - b.x * a.y)) * d, 0.0);
+    r1 = vec4((a.w * (b.y - c.y) + b.w * (c.y - a.y) + c.w * (a.y - b.y)) * d, (a.w * (c.x - b.x) + b.w * (a.x - c.x) + c.w * (b.x - a.x)) * d,
+              (a.w * (b.x * c.y - c.x * b.y) + b.w * (c.x * a.y - a.x * c.y) + c.w * (a.x * b.y - b.x * a.y)) * d, 0.0);
+  } else {
+    float m[72];
+    for (int k = 0; k < 4; ++k) {
+      vec4 t = s_sample[pick(n)];
+      int o = k * 18;
+      m[o + 0] = t.x;
+      m[o + 1] = t.y;
+      m[o + 2] = 1.0;
+      m[o + 3] = 0.0;
+      m[o + 4] = 0.0;
+      m[o + 5] = 0.0;
+      m[o + 6] = -t.z * t.x;
+      m[o + 7] = -t.z * t.y;
+      m[o + 8] = t.z;
+      m[o + 9] = 0.0;
+      m[o + 10] = 0.0;
+      m[o + 11] = 0.0;
+      m[o + 12] = t.x;
+      m[o + 13] = t.y;
+      m[o + 14] = 1.0;
+      m[o + 15] = -t.w * t.x;
+      m[o + 16] = -t.w * t.y;
+      m[o + 17] = t.w;
+    }
+    if (!solve8(m)) return;
+    float h[8];
+    for (int k = 0; k < 8; ++k) h[k] = m[k * 9 + 8] / m[k * 9 + k];
+    if (abs(h[6]) > 0.5 || abs(h[7]) > 0.5) return;
+    r0 = vec4(h[0], h[1], h[2], 0.0);
+    r1 = vec4(h[3], h[4], h[5], 0.0);
+    r2 = vec4(h[6], h[7], 1.0, 0.0);
+  }
+  vec2 scale = searchScale();
+  float agree = AGREE_PX * AGREE_PX, score = 0.0;
+  if (i < HYP_AFFINE) {
+    // No division by a depth that is 1 everywhere.
+    for (int k = 0; k < n; ++k) {
+      vec4 t = s_sample[k];
+      vec2 r = (vec2(dot(r0.xy, t.xy) + r0.z, dot(r1.xy, t.xy) + r1.z) - t.zw) / scale;
+      if (dot(r, r) < agree) score += 1.0;
+    }
+  } else {
+    for (int k = 0; k < n; ++k) {
+      vec4 t = s_sample[k];
+      vec2 r = (hApply(r0, r1, r2, t.xy) - t.zw) / scale;
+      if (dot(r, r) < agree) score += 1.0;
+    }
+  }
+  // A plane has two more parameters: it must be clearly better than the affine motions.
+  if (i >= HYP_AFFINE) score /= 1.05;
+  s_hyp[i * 3] = r0;
+  s_hyp[i * 3 + 1] = r1;
+  s_hyp[i * 3 + 2] = vec4(r2.xyz, score);
+}

@@ -1,0 +1,81 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// What the cost does not need goes away: a sparse wide median of the front's vectors, taken where it costs little more; or (pc.b.x = 1) the last soft step, the mean of the 3 x 3 inside the matte.
+// pc.a = (unused, flip of the input). With the median the cost follows, in the other flip. Only the matte's points run, one per lane; outside it both flips hold the same. No branch per sample: what does not count weighs 0, and the median comes from a sorting network, where what is outside the matte sorts last.
+#include "rc7_common.glsl"
+layout(local_size_x = 64) in;
+
+float patchCost(int side, ivec2 q, vec2 v, vec3 centre) {
+  const bool thin = (R_OPTS & 4096) != 0;
+  const int samples = thin ? 8 : 16;
+  float sum = 0.0, weight = 0.0;
+  for (int n = 0; n < samples; ++n) {
+    int j = thin ? THIN[n] : n;
+    ivec2 t = q + IPATCH[j], inner = clamp(t, ivec2(0), ivec2(LW - 1, LH - 1));
+    vec2 pos = latCentre(t), to = pos + v;
+    vec3 c = sampleReal(side, pos);
+    vec3 d = abs(c - centre);
+    float mask = plan[planOf(P_MASK, side, inner.y * LW + inner.x)], differ = l1(sampleReal(1 - side, to), c);
+    float like = 1.0 / (1.0 + 12.0 * (d.x + d.y + d.z));
+    like = all(bvec4(t.x == inner.x, t.y == inner.y, mask >= 0.5, insideM(to))) ? like : 0.0;
+    sum += like * min(differ, 0.25);
+    weight += like;
+  }
+  return weight > (thin ? 0.125 : 0.25) ? sum / weight : 1.0;
+}
+
+void main() {
+  int side = THIS_SIDE, flip = pc.a.y;
+  uint at = gl_GlobalInvocationID.x;
+  if (at >= f_count[side]) return;
+  uint packed_q = f_list[uint(side * ln()) + at];
+  ivec2 q = ivec2(packed_q & 0xffffu, packed_q >> 16);
+  int p = q.y * LW + q.x;
+  int cost_in = flip == 0 ? P_FCOST0 : P_FCOST1, cost_out = flip == 0 ? P_FCOST1 : P_FCOST0;
+  vec2 me = front[frontOf(flip, side, p)];
+  float me_c = plan[planOf(cost_in, side, p)];
+  if (pc.b.x != 0) {
+    vec2 sum = vec2(0.0);
+    float n = 0.0;
+    for (int b = -1; b <= 1; ++b)
+      for (int a = -1; a <= 1; ++a) {
+        ivec2 t = q + ivec2(a, b), inner = clamp(t, ivec2(0), ivec2(LW - 1, LH - 1));
+        int m = inner.y * LW + inner.x;
+        float mask = plan[planOf(P_MASK, side, m)], counts = all(bvec3(t.x == inner.x, t.y == inner.y, mask >= 0.5)) ? 1.0 : 0.0;
+        sum += counts * front[frontOf(flip, side, m)];
+        n += counts;
+      }
+    front[frontOf(1 - flip, side, p)] = sum / n;
+    plan[planOf(cost_out, side, p)] = me_c;
+    return;
+  }
+  // Up to 13 vectors on a sparse disc: the median of each component.
+  const ivec2 taps[13] = ivec2[13](ivec2(0, 0), ivec2(-2, 0), ivec2(2, 0), ivec2(0, -2), ivec2(0, 2), ivec2(-2, -2), ivec2(2, -2), ivec2(-2, 2), ivec2(2, 2), ivec2(-4, 0), ivec2(4, 0), ivec2(0, -4), ivec2(0, 4));
+  int r = max(1, 5 / S);
+  float xs[13], ys[13];
+  int n = 0;
+  for (int e = 0; e < 13; ++e) {
+    ivec2 t = q + taps[e] * r / 2, inner = clamp(t, ivec2(0), ivec2(LW - 1, LH - 1));
+    int m = inner.y * LW + inner.x;
+    float mask = plan[planOf(P_MASK, side, m)];
+    vec2 v = front[frontOf(flip, side, m)];
+    bool counts = all(bvec3(t.x == inner.x, t.y == inner.y, mask >= 0.5));
+    xs[e] = counts ? v.x : 1e30;
+    ys[e] = counts ? v.y : 1e30;
+    n += counts ? 1 : 0;
+  }
+#define SORT2(A, B) { float low = min(xs[A], xs[B]), high = max(xs[A], xs[B]); xs[A] = low; xs[B] = high; low = min(ys[A], ys[B]); high = max(ys[A], ys[B]); ys[A] = low; ys[B] = high; }
+  SORT2(0, 1) SORT2(2, 3) SORT2(4, 5) SORT2(6, 7) SORT2(8, 9) SORT2(10, 11) SORT2(0, 2) SORT2(1, 3) SORT2(4, 6) SORT2(5, 7) SORT2(8, 10) SORT2(9, 11) SORT2(1, 2)
+  SORT2(5, 6) SORT2(9, 10) SORT2(0, 4) SORT2(1, 5) SORT2(2, 6) SORT2(3, 7) SORT2(8, 12) SORT2(2, 4) SORT2(3, 5) SORT2(10, 12) SORT2(1, 2) SORT2(3, 4) SORT2(5, 6)
+  SORT2(9, 10) SORT2(11, 12) SORT2(0, 8) SORT2(1, 9) SORT2(2, 10) SORT2(3, 11) SORT2(4, 12) SORT2(4, 8) SORT2(5, 9) SORT2(6, 10) SORT2(7, 11) SORT2(2, 4)
+  SORT2(3, 5) SORT2(6, 8) SORT2(7, 9) SORT2(10, 12) SORT2(1, 2) SORT2(3, 4) SORT2(5, 6) SORT2(7, 8) SORT2(9, 10) SORT2(11, 12)
+  vec2 med = vec2(xs[0], ys[0]);
+  for (int i = 1; i <= 6; ++i) {
+    bool here = i == n / 2;
+    med = here ? vec2(xs[i], ys[i]) : med;
+  }
+  float c = patchCost(side, q, med, sampleReal(side, latCentre(q)));
+  bool take = c <= me_c + u.th2.z;
+  front[frontOf(1 - flip, side, p)] = take ? med : me;
+  plan[planOf(cost_out, side, p)] = take ? c : me_c;
+}

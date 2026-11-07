@@ -1,0 +1,58 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// An even sample of what is left to explain: the trials and the rounds only look at this. pc.a.x: 0 one lane counts the words and decides; 1 each pick in its own lane finds its cell by itself, so the sample takes as long
+// as one pick and not as 256. Few cells left: the end.
+#include "rc7_common.glsl"
+#include "rc7_search.glsl"
+layout(local_size_x = 64) in;
+
+// The n-th set bit of a word, by halves.
+int nthBit(uint bits, int n) {
+  int at = 0;
+  for (int width = 16; width > 0; width >>= 1) {
+    int low = bitCount(bits & ((1u << width) - 1u));
+    if (n >= low) {
+      n -= low;
+      bits >>= width;
+      at += width;
+    }
+  }
+  return at;
+}
+
+void main() {
+  if (s_stop != 0) return;
+  int words = (cellCount() + 31) / 32;
+  if (pc.a.x == 0) {
+    if (gl_GlobalInvocationID.x != 0u) return;
+    int total = 0;
+    for (int w = 0; w < words; ++w) {
+      s_before[w] = total;
+      total += bitCount(s_rest[w]);
+    }
+    s_before[words] = total;
+    if (total < 16) {
+      s_stop = 1;
+      s_sample_n = 0;
+      return;
+    }
+    s_sample_n = min(total, 256);
+    return;
+  }
+  int k = int(gl_GlobalInvocationID.x), wanted = s_sample_n;
+  if (k >= wanted) return;
+  int total = s_before[words];
+  int rank = int(float(k) * float(total) / float(wanted));
+  int low = 0, high = words;
+  for (int step_i = 0; step_i < 8; ++step_i) {
+    int middle = (low + high) >> 1;
+    if (s_before[middle] <= rank) low = middle;
+    else high = middle;
+  }
+  int i = low * 32 + nthBit(s_rest[low], rank - s_before[low]);
+  int fw = u.cfg2.x;
+  vec2 scale = searchScale();
+  vec2 pos = (vec2(float(i % fw), float(i / fw)) + 0.5) * u.cell.xy;
+  vec2 to = pos + snap[i].xy;
+  s_sample[k] = vec4(pos * scale - 1.0, to * scale - 1.0);
+}

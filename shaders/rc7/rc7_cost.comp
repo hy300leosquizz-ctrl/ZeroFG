@@ -1,0 +1,33 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// What every surface costs at each point of one picture, over a small patch. THIS_SIDE, THIS_KIND (0 sharp, 1 soft) are known when the pipeline is built; pc.b.x: the first row of groups of this slice. -1 where its partner falls out of the picture.
+// One dispatch per picture: the patch in this picture is read once and every surface compares against it, surface by surface: its samples lie close together in the other picture, so they stay in the cache.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy) + ivec2(0, pc.b.x * 8);
+  if (q.x >= LW || q.y >= LH) return;
+  int side = THIS_SIDE, kind = THIS_KIND, p = q.y * LW + q.x;
+  vec2 pos = latCentre(q);
+  const bool thin = (R_OPTS & 512) != 0;
+  const int samples = thin ? 8 : 16;
+  vec3 here[samples];
+  for (int n = 0; n < samples; ++n) {
+    int j = thin ? THIN[n] : n;
+    vec2 t = pos + PATCH[j] * float(S);
+    here[n] = kind == 0 ? sampleReal(side, t) : sampleSoft(side, t);
+  }
+  for (int k = 0; k < PLANES; ++k) {
+    float sum = 0.0, valid = 0.0;
+    for (int n = 0; n < samples; ++n) {
+      int j = thin ? THIN[n] : n;
+      vec2 t2 = surfaceGo(side, k, pos + PATCH[j] * float(S));
+      vec3 c1 = kind == 0 ? sampleReal(1 - side, t2) : sampleSoft(1 - side, t2);
+      float counts = insideM(t2) ? 1.0 : 0.0;
+      sum += counts * min(l1(here[n], c1), 0.25);
+      valid += counts;
+    }
+    cost[costOf(kind, side, k, p)] = valid >= (thin ? 2.0 : 4.0) ? sum / valid : -1.0;
+  }
+}

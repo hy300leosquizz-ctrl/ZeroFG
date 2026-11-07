@@ -1,0 +1,19 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// df: the starting flow of a level, both directions: twice the coarser level's flow (zero on the coarsest level).
+// pc.a = (w, h, flow offset dir 0, flow offset dir 1) of the level, pc.b = (w, h, offset dir 0, offset dir 1) of the coarser level, pc.c.x = 1 on the top.
+#include "df_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  int x = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
+  if (x >= pc.a.x || y >= pc.a.y) return;
+  int i = y * pc.a.x + x;
+  if (pc.c.x != 0) {
+    flow[pc.a.z + i] = vec2(0.0);
+    flow[pc.a.w + i] = vec2(0.0);
+    return;
+  }
+  flow[pc.a.z + i] = 2.0 * flow_bil(pc.b.z, pc.b.x, pc.b.y, 0.5 * float(x), 0.5 * float(y));
+  flow[pc.a.w + i] = 2.0 * flow_bil(pc.b.w, pc.b.x, pc.b.y, 0.5 * float(x), 0.5 * float(y));
+}

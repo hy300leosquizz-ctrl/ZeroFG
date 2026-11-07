@@ -1,0 +1,47 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The field outside the matte, for the middle's fixed point: each point takes the vector of the nearest matte point, by jumps. pc.a = (side, flip of the input, jump). Distances in P_DIST0/1, set here at jump 0.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (q.x >= LW || q.y >= LH) return;
+  int side = pc.a.x, flip = pc.a.y, jump = pc.a.z, p = q.y * LW + q.x;
+  int dist_in = flip == 0 ? P_DIST0 : P_DIST1, dist_out = flip == 0 ? P_DIST1 : P_DIST0;
+  vec2 me = front[frontOf(flip, side, p)];
+  if (jump == 0) {
+    plan[planOf(dist_out, side, p)] = plan[planOf(P_MASK, side, p)] > 0.5 ? 0.0 : 1e9;
+    front[frontOf(1 - flip, side, p)] = me;
+    return;
+  }
+  float best = plan[planOf(dist_in, side, p)];
+  // On the matte there is nothing nearer.
+  if (best <= 0.0) {
+    plan[planOf(dist_out, side, p)] = best;
+    front[frontOf(1 - flip, side, p)] = me;
+    return;
+  }
+  const ivec2 dirs[8] = ivec2[8](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1), ivec2(1, 1), ivec2(-1, -1), ivec2(1, -1), ivec2(-1, 1));
+  float dist[8];
+  int at[8];
+  bool any_new = false;
+  for (int e = 0; e < 8; ++e) {
+    ivec2 t = q + dirs[e] * jump, inner = clamp(t, ivec2(0), ivec2(LW - 1, LH - 1));
+    at[e] = inner.y * LW + inner.x;
+    float d = plan[planOf(dist_in, side, at[e])];
+    dist[e] = t == inner && d < 1e9 ? d + length(vec2(dirs[e])) * float(jump) : 1e30;
+    any_new = any_new || dist[e] < best;
+  }
+  // A wave with nothing nearer anywhere leaves here.
+  if (any_new) {
+    for (int e = 0; e < 8; ++e) {
+      vec2 theirs = front[frontOf(flip, side, at[e])];
+      bool take = dist[e] < best;
+      best = take ? dist[e] : best;
+      me = take ? theirs : me;
+    }
+  }
+  plan[planOf(dist_out, side, p)] = best;
+  front[frontOf(1 - flip, side, p)] = me;
+}

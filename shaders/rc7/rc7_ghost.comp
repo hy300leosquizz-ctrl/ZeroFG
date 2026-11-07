@@ -1,0 +1,18 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// A surface's failure has two ends, the object and its ghost: a raw point that stands out less than where its own surface lands in the other picture is the ghost. pc.a.x: the side. Writes P_TMP.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (q.x >= LW || q.y >= LH) return;
+  int side = pc.a.x, p = q.y * LW + q.x;
+  float keep = 0.0;
+  if (plan[planOf(P_RAW, side, p)] > 0.5) {
+    vec2 pos = latCentre(q), to = surfaceGo(side, int(label[labelOf(0, side, p)]), pos);
+    float here = plan[planOf(P_STAND, side, p)], there = plan[planOf(P_STAND, 1 - side, latIndex(to))];
+    keep = here < u.th1.y * there || here < u.th1.z ? 0.0 : 1.0;
+  }
+  plan[planOf(P_TMP, side, p)] = keep;
+}

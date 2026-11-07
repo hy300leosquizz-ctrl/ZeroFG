@@ -1,0 +1,105 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The surfaces of the last pair, brought up to this pair's motion. Which surfaces there are changes slowly, and the search finds that in the background; how each one moves changes every pair, and this pair's flow says it.
+// pc.a.x: 2 clear; 0 every cell in its own lane goes to the surface nearest to it and adds what it says; 1 every surface in its own lane solves a small affine correction after its model (the plane's perspective stays), then
+// its inverse and the map from the middle. The still surface, the last one, never moves. Sums in fixed point, since lanes of different groups add to them.
+#include "rc7_common.glsl"
+#include "rc7_search.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+const float FIX_M = 65536.0, FIX_R = 16777216.0;
+
+void main() {
+  int mode = pc.a.x;
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  int moving = s_planes - 1;
+  if (mode == 2) {
+    int i = q.y * 8 + q.x;
+    if (i < 72) r_sum[i] = 0;
+    return;
+  }
+  if (mode == 0) {
+    int fw = u.cfg2.x, fh = u.cfg2.y;
+    if (q.x >= fw || q.y >= fh) return;
+    vec2 scale = searchScale();
+    vec2 pos = (vec2(q) + 0.5) * u.cell.xy;
+    vec2 n = pos * scale - 1.0, to = (pos + cells[q.y * fw + q.x].xy) * scale - 1.0;
+    float tol = 6.0 * max(1.0, float(W) / 640.0), best = tol * tol;
+    int k_best = -1;
+    vec2 p_best = vec2(0.0);
+    for (int k = 0; k < 6; ++k) {
+      if (k > moving) break;
+      int t = k * 3;
+      vec2 p = hApply(t_H[t], t_H[t + 1], t_H[t + 2], n);
+      vec2 r = (to - p) / scale;
+      float d = dot(r, r);
+      if (d < best) {
+        best = d;
+        k_best = k;
+        p_best = p;
+      }
+    }
+    if (k_best < 0 || k_best == moving) return;
+    float x = p_best.x, y = p_best.y;
+    vec2 r = to - p_best;
+    int o = k_best * 12;
+    atomicAdd(r_sum[o], int(x * x * FIX_M));
+    atomicAdd(r_sum[o + 1], int(x * y * FIX_M));
+    atomicAdd(r_sum[o + 2], int(x * FIX_M));
+    atomicAdd(r_sum[o + 3], int(y * y * FIX_M));
+    atomicAdd(r_sum[o + 4], int(y * FIX_M));
+    atomicAdd(r_sum[o + 5], 1);
+    atomicAdd(r_sum[o + 6], int(r.x * x * FIX_R));
+    atomicAdd(r_sum[o + 7], int(r.x * y * FIX_R));
+    atomicAdd(r_sum[o + 8], int(r.x * FIX_R));
+    atomicAdd(r_sum[o + 9], int(r.y * x * FIX_R));
+    atomicAdd(r_sum[o + 10], int(r.y * y * FIX_R));
+    atomicAdd(r_sum[o + 11], int(r.y * FIX_R));
+    return;
+  }
+  int k = q.y * 8 + q.x, t = k * 3;
+  if (k >= 6) return;
+  if (k >= moving) {
+    if (k == moving) {
+      for (int r = 0; r < 3; ++r) {
+        r_H[t + r] = t_H[t + r];
+        r_Hi[t + r] = t_H[t + r];
+        r_Mid[t + r] = t_H[t + r];
+      }
+    }
+    return;
+  }
+  int o = k * 12;
+  float count = float(r_sum[o + 5]);
+  vec3 a0 = vec3(0.0), a1 = vec3(0.0);
+  if (count >= 16.0) {
+    float xx = float(r_sum[o]) / FIX_M, xy = float(r_sum[o + 1]) / FIX_M, x = float(r_sum[o + 2]) / FIX_M, yy = float(r_sum[o + 3]) / FIX_M, y = float(r_sum[o + 4]) / FIX_M;
+    vec3 ru = vec3(float(r_sum[o + 6]), float(r_sum[o + 7]), float(r_sum[o + 8])) / FIX_R, rv = vec3(float(r_sum[o + 9]), float(r_sum[o + 10]), float(r_sum[o + 11])) / FIX_R;
+    mat3 m = mat3(xx, xy, x, xy, yy, y, x, y, count);
+    float spread = (xx - x * x / count) * (yy - y * y / count) - (xy - x * y / count) * (xy - x * y / count);
+    // Over a narrow patch only the shift is known.
+    if (spread > 1e-4 * count * count) {
+      mat3 inv = inverse(m);
+      a0 = inv * ru;
+      a1 = inv * rv;
+    } else {
+      a0 = vec3(0.0, 0.0, ru.z / count);
+      a1 = vec3(0.0, 0.0, rv.z / count);
+    }
+  }
+  vec3 r0 = t_H[t].xyz, r1 = t_H[t + 1].xyz, r2 = t_H[t + 2].xyz;
+  mat3 h = transpose(mat3((1.0 + a0.x) * r0 + a0.y * r1 + a0.z * r2, a1.x * r0 + (1.0 + a1.y) * r1 + a1.z * r2, r2));
+  mat3 hi = inverse(h);
+  mat3 ym = h, z = mat3(1.0);
+  for (int it = 0; it < 8; ++it) {
+    mat3 iy = inverse(ym), iz = inverse(z);
+    ym = 0.5 * (ym + iz);
+    z = 0.5 * (z + iy);
+  }
+  mat3 ht = transpose(h), hit = transpose(hi), zt = transpose(z);
+  for (int r = 0; r < 3; ++r) {
+    r_H[t + r] = vec4(ht[r], 0.0);
+    r_Hi[t + r] = vec4(hit[r], 0.0);
+    r_Mid[t + r] = vec4(zt[r], 0.0);
+  }
+}

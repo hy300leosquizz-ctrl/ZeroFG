@@ -92,6 +92,8 @@ class ZeroFGIndependentPresenter final {
     uint32_t display_aspect_ratio_x = 0;
     uint32_t display_aspect_ratio_y = 0;
     bool is_8bpc = false;
+    // The host says this Real starts a new scene or screen (a cut, a menu, a fade through black): no synthetic is generated across it.
+    bool content_break = false;
     xe::SourcePublicationTelemetry publication;
     VkImage image = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;

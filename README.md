@@ -1,6 +1,6 @@
 # ZeroFG
 
-> Frame generation for mobile GPUs, built on Vulkan. **Version 1.0.4.**
+> Frame generation for mobile GPUs, built on Vulkan. **Version 1.1.0.**
 
 ZeroFG takes two frames a game rendered and creates the one halfway between
 them. Shown in between, those frames double the frame rate: 60 fps becomes
@@ -25,41 +25,44 @@ an emulator.
 
 ## Two modes
 
-| Mode | What it is | GPU time per frame, 1280 x 720 |
+| Mode | What it is | Adreno 840, GPU time per frame: 640 x 448 · 1280 x 896 · 1920 x 1344 |
 | --- | --- | --- |
-| `Mode::kZero` | The full engine: the best image | Adreno 840: 2.2 ms · Adreno 650: 7.2 ms |
-| `Mode::kReallyZero` | The same engine with half the fine passes, for weaker GPUs | Adreno 840: 1.7 ms · Adreno 650: 5.4 ms |
+| `Mode::kZero` | The quality engine: the best image, most of all when the camera moves | 2.18 · 3.37 · 6.42 ms |
+| `Mode::kReallyZero` | The economy engine: high quality at the lowest cost | 0.45 · 0.94 · 1.62 ms |
 
-The times are laboratory measurements of the generation alone, on a fixed
-workload. ReallyZero stays within about 0.2 dB of Zero on our real-content
-measurement streams (fast synthetic motion loses more).
+The times are laboratory measurements of the generation alone, on real game
+frames (God of War II), with the phone's own driver. On the same phone and
+harness, LSFG 3.1's performance shaders (fp16) take 0.94 · 1.12 · 1.44 ms at
+their automatic flow scale and 0.95 · 2.20 · 4.15 ms at full flow.
 
-## How the engine works
+## How the engines work
 
-For every pair of frames A and B, ZeroFG:
+**ReallyZero** solves a dense optical flow between A and B at half resolution,
+coarse to fine (an inverse search on small patches, then a densification),
+builds the midpoint frame from both sources along that flow, and cleans up
+where the flow doubts itself. It starts each pair from the previous pair's
+motion and keeps what it prepared for a frame that comes back as the next
+pair's first.
 
-1. works out the exposure change between them (gain, bias, correlation), so
-   fades and flashes are not mistaken for motion;
-2. estimates motion on a 20-pixel cell grid, coarse to fine, and tests a few
-   global camera hypotheses;
-3. verifies every cell at full resolution with four propagation passes (two in
-   ReallyZero), starting from the previous pair's motion;
-4. guards continuity: a vector that would tear the scene apart, or that the
-   evidence does not support, falls back to a safe blend;
-5. resolves the midpoint frame, warping both sources by how much it trusts
-   them and rebuilding the final colour with a sharp kernel.
+**Zero** builds on that picture. It explains the pair as layers: surfaces that
+move as a whole (found in the background, a few steps per pair, and brought up
+to each pair's motion by the flow), the nearest moving object with its own
+matte, and a screen layer for what holds still on the screen (HUDs, text,
+overlays). A judge hands a region back to the dense-flow picture wherever the
+layers contradict themselves. All of it is found and composed on the GPU, in
+the command buffer you pass in.
 
-HUDs, text and static overlays stay where they belong instead of smearing with
-the world behind them.
+Both engines notice a scene cut and show the later frame whole instead of a
+blend of two scenes.
 
 ## Requirements
 
 - A Vulkan 1.3 device with `synchronization2` and
   `shaderStorageImageExtendedFormats` enabled.
-- `R8_UNORM` storage images, `A2B10G10R10_UNORM_PACK32` storage images that can
-  be blitted from, and an input format that can be sampled with linear filtering.
-- A picture size the 64-cell grid divides exactly (1280 x 720 and 1920 x 1080
-  both work). Other sizes are refused, never run in a weaker mode.
+- `A2B10G10R10_UNORM_PACK32` storage images that can be blitted from, and an
+  input format that can be sampled with linear filtering (`R8_UNORM` storage
+  images too for the HUD path).
+- A picture from 64 x 64 to 16384 x 16384.
 
 Optional features the device has enabled make it faster (half-precision
 colour, 64-wide subgroups, cubic filtering). Every backend gives the same
@@ -75,7 +78,7 @@ cmake --build build
 This builds the static library `zerofg` (alias `zerofg::zerofg`). The shaders
 ship compiled (`shaders/prebuilt`), so a host needs no shader tools. With
 Python 3, `glslangValidator` and `spirv-opt` from the Vulkan SDK (set
-`VULKAN_SDK`, or put both on `PATH`) they are compiled from `shaders/rc3`
+`VULKAN_SDK`, or put both on `PATH`) they are compiled from `shaders/`
 instead; `-DZEROFG_PREBUILT_SHADERS=ON|OFF` forces one or the other. After
 changing a shader, build `zerofg_update_prebuilt_shaders` and commit
 `shaders/prebuilt` with it (`zerofg_check_prebuilt_shaders` fails while they
@@ -96,7 +99,7 @@ Or let CMake fetch it:
 include(FetchContent)
 FetchContent_Declare(zerofg
   GIT_REPOSITORY https://github.com/hy300leosquizz-ctrl/ZeroFG.git
-  GIT_TAG v1.0.4)
+  GIT_TAG v1.1.0)
 FetchContent_MakeAvailable(zerofg)
 target_link_libraries(my_host PRIVATE zerofg::zerofg)
 ```
@@ -105,8 +108,8 @@ Built and checked on Windows (clang, llvm-mingw) and Android (NDK r29,
 arm64-v8a). The presenter builds in any Android host through
 [`host/portable`](host/portable/), whose README lists what a host has to do.
 
-ZeroFG has been runtime-validated in games on one device (Adreno 840); the
-Adreno 650 is additionally qualified in the laboratory.
+ZeroFG 1.1 has been runtime-validated in games on the Adreno 840 (ARMSX2); its
+engines are also timed on the Adreno 650 and a Radeon Vega in the laboratory.
 
 ## By the numbers
 
@@ -123,6 +126,30 @@ presenter at all. It stays in this repository's history. 1.0 replaces all of
 it: a new motion estimator verified at full resolution, a temporal prior, an
 exposure model, a continuity guard, a new resolve, and the presenter, measured
 against ground truth in the laboratory and in play.
+
+## What's new in 1.1
+
+Two new engines, under the same two names:
+
+- **Zero is now a layered engine** (RC7): surfaces, the nearest moving object
+  and a screen layer over a dense-flow picture, with a judge that takes regions
+  back where the layers disagree. It leads when the camera moves: on a Shadow
+  of the Colossus camera pan, 36.67 dB against ReallyZero's 34.32 and LSFG
+  3.1's 31.1 (the same pairs, the same ruler).
+- **ReallyZero is now a dense optical flow** with a cleanup pass: the cheapest
+  ZeroFG yet (0.94 ms at 1280 x 896 on the Adreno 840), and close to Zero
+  wherever the camera holds still.
+- **The 1.0 engine (RC3) is retired.** `Mode::kZero` and `Mode::kReallyZero`
+  now create the new engines, so a 1.0 host gets them without a code change;
+  `Mode::kRC7` and `Mode::kDenseFlow` name the same engines.
+- **Any picture size** from 64 x 64 to 16384 x 16384, no cell grid to fit.
+- **Scene cuts.** Both engines show the later frame whole across a cut, and a
+  host that knows where its cuts are can tell the presenter
+  (`content_break`, see [INTEGRATION.md](INTEGRATION.md#6-pace)).
+- **The HUD path** (`HudPlanes`): a host that sees how the game draws its HUD
+  hands it over, and it stays crisp and in place over a moving world: up to
+  6 dB more on the HUD in our PS2 measurements. ARMSX2's ZeroGS mode draws it
+  from the PS2's GS ([INTEGRATION.md](INTEGRATION.md#4b-the-hud-optional)).
 
 ## What's new in 1.0.4
 

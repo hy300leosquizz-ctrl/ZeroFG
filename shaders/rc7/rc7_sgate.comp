@@ -1,0 +1,70 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The gates from this pair's own costs, 2.5 x the median and at least the floor, without stopping for the CPU: a histogram with every other point of the lattice in its own lane (pc.a.x = 1), then one lane
+// walks it (pc.a.x = 2). pc.a.x = 0 clears it. The bins are finer near zero, where the gates live. pc.b.x carries the floor in thousandths, pc.b.y the correlation in thousandths under which the pair is a cut (0 never).
+// pc.a.x = 3: the sums of that correlation, on a quarter of the lattice in each direction: real motion stays well above it, a cut does not.
+#include "rc7_common.glsl"
+#include "rc7_search.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+const int BINS = 64;
+
+void main() {
+  int mode = pc.a.x;
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (mode == 0) {
+    int i = q.x;
+    if (i < 256) s_hist[i] = 0u;
+    if (i < 6) s_corr[i] = 0u;
+    return;
+  }
+  if (mode == 3) {
+    ivec2 at = q * 4;
+    if (at.x >= LW || at.y >= LH) return;
+    vec2 pos = latCentre(at);
+    const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+    uint a = uint(dot(sampleSoft(0, pos), LUMA) * 255.0 + 0.5), b = uint(dot(sampleSoft(1, pos), LUMA) * 255.0 + 0.5);
+    atomicAdd(s_corr[0], a);
+    atomicAdd(s_corr[1], b);
+    atomicAdd(s_corr[2], a * a);
+    atomicAdd(s_corr[3], b * b);
+    atomicAdd(s_corr[4], a * b);
+    atomicAdd(s_corr[5], 1u);
+    return;
+  }
+  if (mode == 1) {
+    ivec2 at = q * 2;
+    if (at.x >= LW || at.y >= LH) return;
+    int p = at.y * LW + at.x;
+    for (int what = 0; what < 4; ++what) {
+      float v = plan[planOf(what < 2 ? P_BG : P_SOFT, what & 1, p)];
+      if (v < 0.0) continue;
+      int bin = min(BINS - 1, int(sqrt(min(v, 0.25) * 4.0) * float(BINS)));
+      atomicAdd(s_hist[what * BINS + bin], 1u);
+    }
+    return;
+  }
+  if (q != ivec2(0)) return;
+  float floor_gate = float(pc.b.x) * 0.001;
+  vec4 gates = vec4(floor_gate);
+  for (int what = 0; what < 4; ++what) {
+    uint total = 0u;
+    for (int b = 0; b < BINS; ++b) total += s_hist[what * BINS + b];
+    if (total == 0u) continue;
+    uint half_n = total / 2u, seen = 0u;
+    for (int b = 0; b < BINS; ++b) {
+      seen += s_hist[what * BINS + b];
+      if (seen > half_n) {
+        float x = (float(b) + 0.5) / float(BINS);
+        gates[what] = max(floor_gate, 2.5 * 0.25 * x * x);
+        break;
+      }
+    }
+  }
+  s_gate = gates;
+  // Flat against flat is no cut; flat against a picture is.
+  float n = max(1.0, float(s_corr[5])), mean_a = float(s_corr[0]) / n, mean_b = float(s_corr[1]) / n;
+  float va = float(s_corr[2]) / n - mean_a * mean_a, vb = float(s_corr[3]) / n - mean_b * mean_b, cov = float(s_corr[4]) / n - mean_a * mean_b;
+  float correlation = va * vb > 1.0 ? cov / sqrt(va * vb) : (max(va, vb) > 16.0 ? 0.0 : 1.0);
+  s_cut = correlation * 1000.0 < float(pc.b.y) ? 1 : 0;
+}

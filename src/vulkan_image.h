@@ -21,7 +21,8 @@ class OwnedImage {
                 uint32_t width,
                 uint32_t height,
                 VkFormat format,
-                VkImageUsageFlags usage) {
+                VkImageUsageFlags usage,
+                uint32_t layers = 1) {
     if (vulkan.physical_device == VK_NULL_HANDLE ||
         vulkan.device == VK_NULL_HANDLE ||
         width == 0 || height == 0 ||
@@ -37,7 +38,7 @@ class OwnedImage {
     image_info.format = format;
     image_info.extent = {width, height, 1};
     image_info.mipLevels = 1;
-    image_info.arrayLayers = 1;
+    image_info.arrayLayers = layers;
     image_info.samples = VK_SAMPLE_COUNT_1_BIT;
     image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
     image_info.usage = usage;
@@ -108,13 +109,13 @@ class OwnedImage {
     VkImageViewCreateInfo view_info{};
     view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     view_info.image = image_;
-    view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view_info.viewType = layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
     view_info.format = format;
     view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     view_info.subresourceRange.baseMipLevel = 0;
     view_info.subresourceRange.levelCount = 1;
     view_info.subresourceRange.baseArrayLayer = 0;
-    view_info.subresourceRange.layerCount = 1;
+    view_info.subresourceRange.layerCount = layers;
 
     if (dispatch.create_image_view(
             vulkan.device, &view_info, vulkan.allocator, &view_) !=

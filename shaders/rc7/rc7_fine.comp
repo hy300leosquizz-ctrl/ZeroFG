@@ -1,0 +1,57 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The last fraction of a pixel, per surface: a gradient step over the surface's own points, in a window around each point of a coarse grid. A wall is no plane; the eye reads this as focus.
+// pc.a = (side, surface, round). Each grid point reads only its own previous step, so every surface of both pictures runs at once.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+float lumaThere(int side, vec2 pos) { return dot(sampleSoft(1 - side, pos), vec3(0.2126, 0.7152, 0.0722)); }
+
+void main() {
+  ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+  int gw = max(1, LW / BEND_STEP), gh = max(1, LH / BEND_STEP);
+  if (g.x >= gw || g.y >= gh) return;
+  int side = THIS_SIDE, k = pc.a.y;
+  if (k >= PLANES - 1) return;
+  ivec3 at = ivec3(g, side * PLANES + k);
+  vec2 now = pc.a.z == 0 ? vec2(0.0) : imageLoad(bendOut, at).xy;
+  ivec2 c = g * BEND_STEP + BEND_STEP / 2;
+  int r = max(2, int(u.judge1.y) / S), st = (R_OPTS & 16384) != 0 ? r : max(1, r / 2);
+  float xx = 0.0, xy = 0.0, yy = 0.0, xr = 0.0, yr = 0.0, area = 0.0, total = 0.0;
+  float d = float(S);
+  for (int b = -r; b <= r; b += st)
+    for (int a = -r; a <= r; a += st) {
+      ivec2 t = c + ivec2(a, b);
+      total += 1.0;
+      if (t.x < 0 || t.y < 0 || t.x >= LW || t.y >= LH) continue;
+      if (int(label[labelOf(0, side, t.y * LW + t.x)]) != k) continue;
+      vec2 pos = latCentre(t);
+      vec2 q = surfaceGo(side, k, pos) + now;
+      if (q.x < d + 1.0 || q.y < d + 1.0 || q.x > float(W) - d - 1.0 || q.y > float(H_) - d - 1.0) continue;
+      float gx = (lumaThere(side, q + vec2(d, 0.0)) - lumaThere(side, q - vec2(d, 0.0))) / (2.0 * d);
+      float gy = (lumaThere(side, q + vec2(0.0, d)) - lumaThere(side, q - vec2(0.0, d))) / (2.0 * d);
+      float res = lumaThere(side, q) - dot(sampleSoft(side, pos), vec3(0.2126, 0.7152, 0.0722));
+      xx += gx * gx;
+      xy += gx * gy;
+      yy += gy * gy;
+      xr += gx * res;
+      yr += gy * res;
+      area += 1.0;
+    }
+  if (area < 0.25 * total) {
+    imageStore(bendOut, at, vec4(now, 0.0, 0.0));
+    return;
+  }
+  float ridge = 2e-6 * area;
+  xx += ridge;
+  yy += ridge;
+  float det = xx * yy - xy * xy;
+  if (det <= 1e-14) {
+    imageStore(bendOut, at, vec4(now, 0.0, 0.0));
+    return;
+  }
+  vec2 step_v = vec2(-(yy * xr - xy * yr), -(xx * yr - xy * xr)) / det;
+  float cap = 1.5 * max(1.0, float(W) / 640.0), len = length(step_v);
+  if (len > cap) step_v *= cap / len;
+  imageStore(bendOut, at, vec4(now + step_v, 0.0, 0.0));
+}

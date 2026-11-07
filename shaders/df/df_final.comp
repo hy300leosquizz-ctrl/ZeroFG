@@ -1,0 +1,179 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// df: the middle picture before the cleanup. The backward form (the midpoint flow from both directions, F_t0 = (F10 - F01) / 4, the A and B samples
+// weighted by their forward-backward loop errors) fills where the splats are thin; elsewhere the normalised splat. Also the doubt indicator: the two
+// warps disagree in luma by more than pc.p.y, or neither side closes its loop within pc.p.z px.
+// pc.a = (W, H, 1 for A2B10G10R10, scale), pc.b = (finest w, h, flow offset dir 0, flow offset dir 1), pc.c = (luma offset A, luma offset B, splat
+// mode), DF_OPTS: bit 0 the tx form, bit 1 the sharp colour (real_sharp5), the rest below; pc.p = (sigma, disagreement threshold, loop threshold, 0).
+// The tx form reads the flows and the Reals as textures (8 fetches instead of 40 buffer reads) and takes the disagreement from the luma of the two
+// colour samples, which is the bilinear luma the buffer form reads (the luma is linear in rgb).
+#define DF_REAL_SIZE(T) ivec2(pc.a.x, pc.a.y)
+#define DF_FLOW_SIZE(T) ivec2(pc.b.x, pc.b.y)
+#include "df_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+const vec2 CAND[9] = vec2[9](vec2(8, 0), vec2(-8, 0), vec2(0, 8), vec2(0, -8), vec2(16, 0), vec2(-16, 0), vec2(0, 16), vec2(0, -16), vec2(0, 0));
+
+// The A/B luma disagreement of the midpoint motion t at (x, y) over a plus of five taps two pixels apart (0..255 per tap).
+float sym_sad5(vec2 t, float x, float y) {
+  const vec3 L = vec3(0.299, 0.587, 0.114);
+  float s = 0.0;
+  for (int k = 0; k < 5; ++k) {
+    vec2 d = k == 0 ? vec2(0.0) : vec2(k == 1 ? 2.0 : k == 2 ? -2.0 : 0.0, k == 3 ? 2.0 : k == 4 ? -2.0 : 0.0);
+    s += abs(dot(real_bil(0, x + d.x + t.x, y + d.y + t.y) - real_bil(1, x + d.x - t.x, y + d.y - t.y), L));
+  }
+  return 255.0 * s;
+}
+
+void main() {
+  int x = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
+  int W = pc.a.x, H = pc.a.y;
+  if (x >= W || y >= H) return;
+  bool ten = pc.a.z != 0, tx = (DF_OPTS & 1) != 0, sharp = (DF_OPTS & 2) != 0;
+  if ((DF_OPTS & 8192) != 0 && c_cut != 0) {  // bit 13: a cut has no middle
+    uvec3 q = uvec3(clamp(texelFetch(realB, ivec2(x, y), 0).rgb, 0.0, 1.0) * 1023.0 + 0.5);
+    midw[y * W + x] = q.r | (q.g << 10) | (q.b << 20);
+#ifdef ZFG_DF_IMAGE_OUT
+    imageStore(out_image, ivec2(x, y), vec4(vec3(q) / 1023.0, 1.0));
+#else
+    out_words[y * W + x] = q.r | (q.g << 10) | (q.b << 20) | (3u << 30);
+#endif
+    return;
+  }
+  int sc = pc.a.w, wf = pc.b.x, hf = pc.b.y;
+  float px = float(x), py = float(y);
+  vec2 pa, pb;
+  float ea, eb, dis;
+  vec3 ca, cb;
+  if (tx) {
+    vec2 t0 = 0.25 * (full_flow_t(1, sc, px, py) - full_flow_t(0, sc, px, py));
+    pa = vec2(px, py) + t0;
+    pb = vec2(px, py) - t0;
+    vec2 fa = full_flow_t(0, sc, pa.x, pa.y);
+    vec2 fb = full_flow_t(1, sc, pb.x, pb.y);
+    if ((DF_OPTS & 64) != 0) {
+      // bit 6, the agreement form: each side's sample must MOVE as the middle pixel claims (A to B by -2 t0). Where the claimed point is hidden
+      // in A behind something that moves otherwise (a static head over a panning world), A's sample lands on the occluder, whose own loop
+      // closes, so the loop test below trusts the wrong side; the occluder's flow does not agree with the claim, so this test rejects it.
+      ea = length(fa + 2.0 * t0);
+      eb = length(fb - 2.0 * t0);
+    } else {
+      ea = length(fa + full_flow_t(1, sc, pa.x + fa.x, pa.y + fa.y));
+      eb = length(fb + full_flow_t(0, sc, pb.x + fb.x, pb.y + fb.y));
+    }
+    ca = real_bil(0, pa.x, pa.y);
+    cb = real_bil(1, pb.x, pb.y);
+    dis = 255.0 * abs(dot(ca - cb, vec3(0.299, 0.587, 0.114)));  // the doubt keeps the bilinear taps
+    if ((DF_OPTS & 128) != 0 && dis > pc.p.y) {
+      // bit 7, the symmetric candidates (the RC3 rule: the output's two samples must agree): where the two sides disagree, the midpoint motions
+      // of the neighbours 8 and 16 px away and zero compete by the A/B luma disagreement over a plus of five taps; the winner replaces t0.
+      // Bit 8, the light form: the four neighbours 12 px away and zero (five candidates instead of nine).
+      bool light = (DF_OPTS & 256) != 0;
+      vec2 bt = t0;
+      float best = sym_sad5(t0, px, py);
+      for (int k = 0; k < (light ? 5 : 9); ++k) {
+        int kk = light && k == 4 ? 8 : k;
+        vec2 o = CAND[kk] * (light ? 1.5 : 1.0);
+        vec2 tc = kk == 8 ? vec2(0.0) : 0.25 * (full_flow_t(1, sc, px + o.x, py + o.y) - full_flow_t(0, sc, px + o.x, py + o.y));
+        float s = sym_sad5(tc, px, py);
+        if (s < best) { best = s; bt = tc; }
+      }
+      if (bt != t0) {
+        t0 = bt;
+        pa = vec2(px, py) + t0;
+        pb = vec2(px, py) - t0;
+        fa = full_flow_t(0, sc, pa.x, pa.y);
+        fb = full_flow_t(1, sc, pb.x, pb.y);
+        ea = length(fa + full_flow_t(1, sc, pa.x + fa.x, pa.y + fa.y));
+        eb = length(fb + full_flow_t(0, sc, pb.x + fb.x, pb.y + fb.y));
+        ca = real_bil(0, pa.x, pa.y);
+        cb = real_bil(1, pb.x, pb.y);
+        dis = 255.0 * abs(dot(ca - cb, vec3(0.299, 0.587, 0.114)));
+      }
+    }
+    if ((DF_PRODUCT_OPTS & 4) != 0) {
+      // The place rule discards the warped sharp colours. Decide that same
+      // rule first; retain all error, weight and blend arithmetic below.
+      bool place = false;
+      if ((DF_OPTS & 4096) != 0 && dis > pc.p.y) {
+        vec3 here_a = texelFetch(realA, ivec2(x, y), 0).rgb, here_b = texelFetch(realB, ivec2(x, y), 0).rgb, differ = abs(here_a - here_b);
+        if (max(differ.x, max(differ.y, differ.z)) * 1000.0 < float(pc.c.y)) {
+          ca = here_a;
+          cb = here_b;
+          ea = 0.0;
+          eb = 0.0;
+          dis = 0.0;
+          place = true;
+        }
+      }
+      if (sharp && !place) {
+        ca = real_sharp5(0, pa.x, pa.y);
+        cb = real_sharp5(1, pb.x, pb.y);
+      }
+    } else {
+    if (sharp) {  // the five-tap form: as sharp as the nine-tap one on the clips (gow_1x HF/GT 0.505 against 0.504), 9 fetches instead of 13
+      ca = real_sharp5(0, pa.x, pa.y);
+      cb = real_sharp5(1, pb.x, pb.y);
+    }
+    // Bit 12: the two moving samples disagree but A and B agree in place: the place is right, whatever moved over it. A HUD leaves no ghost, and no doubt is left for the cleanup. pc.c.y: the bar in thousandths.
+    if ((DF_OPTS & 4096) != 0 && dis > pc.p.y) {
+      vec3 here_a = texelFetch(realA, ivec2(x, y), 0).rgb, here_b = texelFetch(realB, ivec2(x, y), 0).rgb, differ = abs(here_a - here_b);
+      if (max(differ.x, max(differ.y, differ.z)) * 1000.0 < float(pc.c.y)) {
+        ca = here_a;
+        cb = here_b;
+        ea = 0.0;
+        eb = 0.0;
+        dis = 0.0;
+      }
+    }
+    }
+  } else {
+    vec2 f01 = full_flow(pc.b.z, wf, hf, sc, px, py);
+    vec2 f10 = full_flow(pc.b.w, wf, hf, sc, px, py);
+    vec2 t0 = 0.25 * (f10 - f01);
+    pa = vec2(px, py) + t0;
+    pb = vec2(px, py) - t0;
+    vec2 fa = full_flow(pc.b.z, wf, hf, sc, pa.x, pa.y);
+    ea = length(fa + full_flow(pc.b.w, wf, hf, sc, pa.x + fa.x, pa.y + fa.y));
+    vec2 fb = full_flow(pc.b.w, wf, hf, sc, pb.x, pb.y);
+    eb = length(fb + full_flow(pc.b.z, wf, hf, sc, pb.x + fb.x, pb.y + fb.y));
+    ca = src_bil(0, W, H, pa.x, pa.y, ten);
+    cb = src_bil(1, W, H, pb.x, pb.y, ten);
+    dis = abs(plane_bil(pc.c.x, W, H, pa.x, pa.y) - plane_bil(pc.c.y, W, H, pb.x, pb.y));
+  }
+  float s2 = pc.p.x * pc.p.x;
+  float e0 = (DF_OPTS & 8) != 0 ? min(ea, eb) : 0.0;  // bit 3: the loop errors relative to the better side (both loops open: not a 50/50 blend)
+  float wa = exp(-(ea - e0) * (ea - e0) / s2) + 1e-3, wb = exp(-(eb - e0) * (eb - e0) / s2) + 1e-3;
+  vec3 bw = (wa * ca + wb * cb) / (wa + wb);
+  if ((DF_OPTS & 16) != 0) {  // bit 4: where the two colours disagree, one side only (the better loop; bit 5: B only when its loop is 0.5 px better)
+    bool use_b = (DF_OPTS & 32) != 0 ? eb < ea - 0.5 : eb < ea;
+    bw = mix(bw, use_b ? cb : ca, smoothstep(pc.p.y, 2.0 * pc.p.y, dis));
+  }
+  int i = y * W + x;
+  uint wsum = (DF_OPTS & 512) != 0 ? acc[i * 4 + 3] : 0u;   // bit 9: there are splats, else the backward form alone
+  vec3 sp = bw;
+  if (wsum > 0u) {
+    vec3 splat = vec3(float(acc[i * 4 + 0]), float(acc[i * 4 + 1]), float(acc[i * 4 + 2])) / (float(wsum) * 1023.0);
+    float wsm = float(wsum) / 1024.0;
+    float t = clamp((wsm - 0.05) / 0.25, 0.0, 1.0);
+    sp = mix(bw, splat, t);
+  }
+  bool doubt = dis > pc.p.y || min(ea, eb) > pc.p.z;
+  if ((DF_OPTS & 1024) != 0) {   // bit 10: the compact form for df_clean_t: one word per pixel
+    uvec3 q = uvec3(clamp(sp, 0.0, 1.0) * 1023.0 + 0.5);
+    midw[i] = q.r | (q.g << 10) | (q.b << 20) | (doubt ? 1u << 30 : 0u);
+    // Bit 11: without a doubt within reach this is already the output; the cleanup runs only on the tiles with one.
+    if ((DF_OPTS & 2048) != 0) {
+#ifdef ZFG_DF_IMAGE_OUT
+      imageStore(out_image, ivec2(x, y), vec4(vec3(q) / 1023.0, 1.0));
+#else
+      out_words[i] = q.r | (q.g << 10) | (q.b << 20) | (3u << 30);
+#endif
+      if (doubt) atomicOr(c_words[(y / 16) * ((W + 15) / 16) + x / 16], 1u);
+    }
+    return;
+  }
+  float ind = doubt ? 1.0 : 0.0;
+  mid[i] = vec4(sp, ind);
+  dens[i] = ind;  // its own plane: the separable density reads one float per tap
+}

@@ -1,0 +1,17 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The pictures the decisions read when the Reals are large: a quarter of the size, one bilinear fetch of the Real per point. The lattice's samples lie 16 px apart there, and on a half-size copy each one still jumps out of the cache: on this one they stay in it (at 1536x1344 on the Adreno 840 the costs fall from 0.86 to 0.39 ms). The base keeps the half-size copy. pc.a.x: the side.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 36, rgb10_a2) uniform writeonly image2D quarterOutA;
+layout(binding = 37, rgb10_a2) uniform writeonly image2D quarterOutB;
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  int side = THIS_SIDE;
+  ivec2 size = side == 0 ? imageSize(quarterOutA) : imageSize(quarterOutB);
+  if (q.x >= size.x || q.y >= size.y) return;
+  vec2 uv = (vec2(q) + 0.5) / vec2(size);
+  if (side == 0) imageStore(quarterOutA, q, vec4(textureLod(realA, uv, 0.0).rgb, 1.0));
+  else imageStore(quarterOutB, q, vec4(textureLod(realB, uv, 0.0).rgb, 1.0));
+}

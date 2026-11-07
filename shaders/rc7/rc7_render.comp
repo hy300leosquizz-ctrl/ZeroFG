@@ -1,0 +1,186 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The picture: the screen on top; the front, whose samples are found by a fixed point; the surfaces front to back, what both pictures see first; the dense picture in whatever is left. What only one
+// picture has goes behind whatever covers it there, or in soft when nothing decides. Also writes what the layer on top says against itself, for the judge. pc.b.x: the first row of groups of this slice.
+// One pipeline per class of groups (R_SURFACE): where a block has one surface and nothing else, none of the rest can happen, and the wave that only needs that runs only that.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+const bool O_TILE = (R_OPTS & 1) != 0, O_BACK = (R_OPTS & 2) != 0, O_TWO = (R_OPTS & 4) != 0, O_HOLE = (R_OPTS & 8) != 0, O_CUBIC = (R_OPTS & 32) != 0, O_FIRST = (R_OPTS & 64) != 0, O_DEBUG = (R_OPTS & 128) != 0, O_LIST = (R_OPTS & 256) != 0;
+
+// A sharp sample: Catmull-Rom on the Reals, through the bilinear filter's five-fetch form, clamped to its 2 x 2.
+vec3 sharpSample(int side, vec2 pos) {
+  vec2 sz = sizeF();
+  // The same kernel, one fetch.
+  if (O_CUBIC) return clamp((side == 0 ? textureLod(cubicA, pos / sz, 0.0) : textureLod(cubicB, pos / sz, 0.0)).rgb, vec3(0.0), vec3(1.0));
+  vec2 g = pos - 0.5, i = floor(g), f = g - i;
+  vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+  vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+  vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+  vec2 w3 = f * f * (-0.5 + 0.5 * f);
+  vec2 w12 = w1 + w2;
+  vec2 t0 = (i - 0.5) / sz, t3 = (i + 2.5) / sz, t12 = (i + 0.5 + w2 / w12) / sz;
+  vec3 c = vec3(0.0);
+  float n = 0.0;
+  vec3 s;
+#define TAP(U, V, WT) s = (side == 0 ? textureLod(realA, vec2(U, V), 0.0) : textureLod(realB, vec2(U, V), 0.0)).rgb; c += s * (WT); n += (WT);
+  TAP(t12.x, t0.y, w12.x * w0.y)
+  TAP(t0.x, t12.y, w0.x * w12.y)
+  TAP(t12.x, t12.y, w12.x * w12.y)
+  TAP(t3.x, t12.y, w3.x * w12.y)
+  TAP(t12.x, t3.y, w12.x * w3.y)
+  return clamp(c / n, vec3(0.0), vec3(1.0));
+}
+
+int orderAt(int rank) { return rank < 4 ? u.order[rank] : u.order2[rank - 4]; }
+// What exists in the block of a place inside the picture.
+uint tileAt(vec2 at) {
+  ivec2 t = clamp(ivec2(at) / TILE, ivec2(0), ivec2(tileW() - 1, tileH() - 1));
+  return tiles[tileW() * tileH() + t.y * tileW() + t.x];
+}
+
+vec3 colour = vec3(0.0);
+float rem = 1.0, dis_out = -1.0;
+bool top_seen = false;
+
+// One surface over what is there. pass_i: with two passes, which one this is, what both pictures see going first; else -1. cover: the surface what only one picture has goes behind, if any.
+void oneSurface(int k, int pass_i, vec2 pos, int cover_plane, bool cover_a) {
+  vec2 ba, bb;
+  surfaceMid(k, pos, ba, bb);
+  // The model's true middle, the surface's fine step on top of it: half of it from each side.
+  vec2 a0 = ba, b0 = bb;
+  for (int it = 0; it < R_BEND; ++it) {
+    ba = a0 - 0.5 * bendAt(0, k, ba);
+    bb = b0 - 0.5 * bendAt(1, k, bb);
+  }
+  bool in_a = insideP(ba), in_b = insideP(bb);
+  float matte_a = matteAt(0, k, ba), matte_b = matteAt(1, k, bb);
+  float bka = in_a ? matte_a : 0.0, bkb = in_b ? matte_b : 0.0;
+  if (k == cover_plane) {
+    if (cover_a) bka = 1.0;
+    else bkb = 1.0;
+  }
+  float claim = max(bka, bkb);
+  if (claim <= 0.01) return;
+  if (pass_i >= 0 && (pass_i == 0) != (min(bka, bkb) >= 0.5)) return;
+  float wa = bka, wb = bkb;
+  // How far this sample is from the front's rim in its own picture.
+  uint block_a = O_TILE ? tileAt(ba) : 0xffffffffu, block_b = O_TILE ? tileAt(bb) : 0xffffffffu;
+  uint ta = in_a ? block_a : 0u, tb = in_b ? block_b : 0u;
+  if ((ta & 512u) != 0u) wa *= pow(1.0 - planAt(P_ALPHA, 0, ba), 4.0);
+  if ((tb & 1024u) != 0u) wb *= pow(1.0 - planAt(P_ALPHA, 1, bb), 4.0);
+  if (O_HOLE) {
+    if ((ta & 2048u) != 0u) wa *= 1.0 - planAt(P_HUD, 0, ba);
+    if ((tb & 2048u) != 0u) wb *= 1.0 - planAt(P_HUD, 0, bb);
+  }
+  bool none = wa + wb < 1e-4;
+  wa = none ? bka : wa;
+  wb = none ? bkb : wb;
+  // A sample that weighs 0 adds 0: every lane of the wave takes both.
+  vec3 ca = sharpSample(0, ba), cb = sharpSample(1, bb);
+  vec3 c3 = (wa * ca + wb * cb) / (wa + wb);
+  bool first_on_top = !top_seen && claim >= 0.5;
+  float differ = l1(sampleSoft(0, ba), sampleSoft(1, bb));
+  dis_out = first_on_top && min(wa, wb) > 0.2 * (wa + wb) ? differ : dis_out;
+  top_seen = top_seen || first_on_top;
+  colour += rem * claim * c3;
+  rem *= 1.0 - claim;
+}
+
+void main() {
+  ivec2 g = ivec2(gl_WorkGroupID.xy) + ivec2(0, pc.b.x);
+  if (O_LIST) {
+    uint entry = f_list[uint(2 * ln()) + uint((R_SURFACE >= 0 ? R_SURFACE : 6) * ((W + 7) / 8) * ((H_ + 7) / 8)) + gl_WorkGroupID.x];
+    g = ivec2(entry & 0xffffu, entry >> 16);
+  }
+  ivec2 q = g * 8 + ivec2(gl_LocalInvocationID.xy);
+  if (q.x >= W || q.y >= H_) return;
+  int i_px = q.y * W + q.x;
+  vec2 pos = vec2(q) + 0.5;
+  if (R_SURFACE >= 0) {
+    oneSurface(R_SURFACE, -1, pos, -1, false);
+  } else {
+    uint here = O_TILE ? tiles[tileW() * tileH() + (q.y / TILE) * tileW() + q.x / TILE] : 0xffffffffu;
+    bool has_front = (here & 1u) != 0u;
+    vec2 fa = pos, fb = pos;
+    bool in_a = false, in_b = false;
+    float fra = 0.0, frb = 0.0;
+    if (has_front) {
+      for (int it = 0; it < R_FRONT; ++it) {
+        fa = pos - 0.5 * frontAt(0, fa);
+        fb = pos - 0.5 * frontAt(1, fb);
+      }
+      in_a = insideP(fa);
+      in_b = insideP(fb);
+      fra = in_a ? matteAt(0, -1, fa) : 0.0;
+      frb = in_b ? matteAt(1, -1, fb) : 0.0;
+    }
+    float claim_f = max(fra, frb);
+    bool behind = false;
+    int cover_plane = -1;
+    bool cover_a = false;
+    if (O_BACK && claim_f >= 0.5 && min(fra, frb) < 0.05 && in_a && in_b) {
+      bool only_a = fra >= frb;
+      vec2 other = only_a ? fb : fa;
+      int cover_side = only_a ? 1 : 0;
+      int cover = int(label[labelOf(0, cover_side, latIndex(other))]);
+      vec2 ca, cb;
+      surfaceMid(cover, pos, ca, cb);
+      vec2 there = only_a ? cb : ca;
+      if (insideP(there)) {
+        int at = latIndex(there);
+        if (int(label[labelOf(0, cover_side, at)]) == cover && plan[planOf(P_MASK, cover_side, at)] < 0.5 && plan[planOf(P_HUD, 0, at)] < 0.5 && cost[costOf(0, cover_side, cover, at)] <= u.th2.x * u.gate[cover_side]) {
+          behind = true;
+          cover_plane = cover;
+          cover_a = !only_a;
+        }
+      }
+      if (!behind) claim_f *= u.th2.y;
+    }
+    vec3 front_c = vec3(0.0);
+    float dis = -1.0;
+    if (claim_f > 0.01) {
+      float wa = fra * (0.1 + 0.9 * (in_a ? planAt(P_CONS, 0, fa) : 0.0));
+      float wb = frb * (0.1 + 0.9 * (in_b ? planAt(P_CONS, 1, fb) : 0.0));
+      if (wa + wb < 1e-4) {
+        wa = fra;
+        wb = frb;
+      }
+      vec3 ca = vec3(0.0), cb = vec3(0.0);
+      if (wa > 0.0) ca = sharpSample(0, fa);
+      if (wb > 0.0) cb = sharpSample(1, fb);
+      front_c = (wa * ca + wb * cb) / (wa + wb);
+      dis = 0.0;
+      if (min(wa, wb) > 0.2 * (wa + wb)) dis = l1(sampleSoft(0, fa), sampleSoft(1, fb));
+    }
+    float t_h = (here & 256u) != 0u ? planAt(P_HUD, 0, pos) : 0.0;
+    if (t_h > 0.01) {
+      vec3 c3 = 0.5 * (sampleReal(0, pos) + sampleReal(1, pos));
+      colour += rem * t_h * c3;
+      rem *= 1.0 - t_h;
+    }
+    bool first_front = (O_FIRST || u.cfg.w != 0) && !behind;
+    top_seen = first_front && claim_f >= 0.5;
+    dis_out = first_front && claim_f >= 0.5 ? dis : -1.0;
+    if (first_front) {
+      colour += rem * claim_f * front_c;
+      rem *= 1.0 - claim_f;
+    }
+    int passes = O_TWO ? 2 : 1;
+    for (int pass_i = 0; pass_i < passes && rem > 0.002; ++pass_i)
+      for (int rank = 0; rank < PLANES && rem > 0.002; ++rank) {
+        int k = orderAt(rank);
+        if (!has_front && (here & (2u << k)) == 0u) continue;
+        oneSurface(k, passes == 2 ? pass_i : -1, pos, cover_plane, cover_a);
+      }
+    if (!first_front) {
+      colour += rem * claim_f * front_c;
+      rem *= 1.0 - claim_f;
+    }
+    if (O_DEBUG && pc.a.y == 1) colour = vec3(claim_f, 1.0 - rem - claim_f, rem);
+  }
+  if (O_DEBUG && pc.a.y == 2) colour = vec3(planAt(P_MASK, 0, pos), planAt(P_MASK, 1, pos), 0.0);
+  else if ((!O_DEBUG || pc.a.y != 1) && rem > 0.0) colour += rem * densePicture(q);
+  disagree[i_px] = dis_out;
+  out_words[i_px] = colourWord(colour);
+}

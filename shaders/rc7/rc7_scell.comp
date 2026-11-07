@@ -1,0 +1,66 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The cells: the median of five taps of the dense flow (pc.a.x = 0; pc.a.y: 1 a new search starts from these), then the motion around each one, the median of a sparse wide window (pc.a.x = 1; a few cells locked on the screen do not decide it).
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+vec2 flowAt(vec2 g) {
+  int fw = u.cfg2.z, fh = u.cfg2.w;
+  g = clamp(g, vec2(0.0), vec2(float(fw - 1), float(fh - 1)));
+  ivec2 i = min(ivec2(g), ivec2(fw - 2, fh - 2));
+  vec2 f = g - vec2(i);
+  int p = u.cfg3.x + i.y * fw + i.x;
+  return mix(mix(dense[p], dense[p + 1], f.x), mix(dense[p + fw], dense[p + fw + 1], f.x), f.y);
+}
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  int fw = u.cfg2.x, fh = u.cfg2.y;
+  if (q.x >= fw || q.y >= fh) return;
+  int at = q.y * fw + q.x;
+  if (pc.a.x == 0) {
+    vec2 pos = (vec2(q) + 0.5) * u.cell.xy;
+    const vec2 off[5] = vec2[5](vec2(0.0, 0.0), vec2(-0.25, -0.25), vec2(0.25, -0.25), vec2(-0.25, 0.25), vec2(0.25, 0.25));
+    float xs[5], ys[5];
+    for (int e = 0; e < 5; ++e) {
+      vec2 v = flowAt((pos + off[e] * u.cell.xy) / u.cell.z - 0.5) * u.cell.z;
+      int i = e;
+      while (i > 0 && xs[i - 1] > v.x) {
+        xs[i] = xs[i - 1];
+        --i;
+      }
+      xs[i] = v.x;
+      i = e;
+      while (i > 0 && ys[i - 1] > v.y) {
+        ys[i] = ys[i - 1];
+        --i;
+      }
+      ys[i] = v.y;
+    }
+    cells[at].xy = vec2(xs[2], ys[2]);
+    if (pc.a.y != 0) snap[at] = vec4(xs[2], ys[2], 0.0, 0.0);
+    return;
+  }
+  float xs[16], ys[16];
+  int n = 0;
+  for (int b = -3; b <= 3; b += 2)
+    for (int a = -3; a <= 3; a += 2) {
+      ivec2 t = q + ivec2(a, b);
+      if (t.x < 0 || t.y < 0 || t.x >= fw || t.y >= fh) continue;
+      vec2 v = cells[t.y * fw + t.x].xy;
+      int i = n;
+      while (i > 0 && xs[i - 1] > v.x) {
+        xs[i] = xs[i - 1];
+        --i;
+      }
+      xs[i] = v.x;
+      i = n;
+      while (i > 0 && ys[i - 1] > v.y) {
+        ys[i] = ys[i - 1];
+        --i;
+      }
+      ys[i] = v.y;
+      ++n;
+    }
+  cells[at].zw = n > 0 ? vec2(xs[n / 2], ys[n / 2]) : vec2(0.0);
+}

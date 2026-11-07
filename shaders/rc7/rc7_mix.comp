@@ -1,0 +1,33 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// What the judge gave back goes to the base's picture. A cut has no middle: B whole, not two scenes at once.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 33, rgb10_a2) uniform writeonly image2D outImage;
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (q.x >= W || q.y >= H_) return;
+  int i_px = q.y * W + q.x;
+  // Retain the packed 10-bit round trip of mix followed by out, but deliver
+  // it here without another full-picture dispatch.
+  if ((REUSE_OPTS & 8) != 0) {
+    uint word;
+    if (u.cfg3.y != 0) {
+      word = colourWord(textureLod(realB, (vec2(q) + 0.5) / sizeF(), 0.0).rgb);
+    } else {
+      word = out_words[i_px];
+      float t = planAt(P_TRUST, 0, vec2(q) + 0.5);
+      if (!(t <= 0.01)) word = colourWord(mix(wordColour(word), basePicture(q), t));
+    }
+    imageStore(outImage, q, vec4(wordColour(word), 1.0));
+    return;
+  }
+  if (u.cfg3.y != 0) {
+    out_words[i_px] = colourWord(textureLod(realB, (vec2(q) + 0.5) / sizeF(), 0.0).rgb);
+    return;
+  }
+  float t = planAt(P_TRUST, 0, vec2(q) + 0.5);
+  if (t <= 0.01) return;
+  out_words[i_px] = colourWord(mix(wordColour(out_words[i_px]), basePicture(q), t));
+}

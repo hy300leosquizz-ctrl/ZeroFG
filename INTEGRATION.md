@@ -20,7 +20,7 @@ never submits, never waits and never presents.
 include(FetchContent)
 FetchContent_Declare(zerofg
   GIT_REPOSITORY https://github.com/hy300leosquizz-ctrl/ZeroFG.git
-  GIT_TAG v1.0.4)
+  GIT_TAG v1.1.0)
 FetchContent_MakeAvailable(zerofg)
 target_link_libraries(my_host PRIVATE zerofg::zerofg)
 ```
@@ -38,7 +38,7 @@ info.vulkan.instance = instance;
 info.vulkan.physical_device = physical_device;
 info.vulkan.device = device;
 info.vulkan.get_instance_proc_addr = vkGetInstanceProcAddr;  // your loader's
-info.mode = zerofg::Mode::kZero;          // or kReallyZero on a weaker GPU
+info.mode = zerofg::Mode::kZero;          // the quality engine; kReallyZero, the economy one
 info.backend = zerofg::Backend::kAuto;    // the fast paths the device has
 info.frame_context_count = 3;             // 1..8, see section 4
 info.capabilities = capabilities;         // see section 2
@@ -81,13 +81,9 @@ Call it outside the hot path, and again whenever the picture size or a format
 changes. It allocates the working resources and builds the pipelines, so call
 it before the frames that need it, never in the middle of one.
 
-- **Size.** ZeroFG lays a grid of cells over the picture, 64 cells on the long
-  side. A picture the grid divides exactly (1280 x 720, 1920 x 1080) runs as
-  it is. Any other picture runs padded to the next size the grid divides
-  (Halo 3's 1152 x 640 runs at 1152 x 648): the edge is repeated into the pad
-  and only the picture is written out. A padded picture needs an
-  `A2B10G10R10_UNORM_PACK32` input and an output format with `BLIT_DST`
-  support; without them it returns `kUnsupported`.
+- **Size.** Any picture from 64 x 64 to 16384 x 16384 runs as it is. The cost
+  grows with the picture (README), so generate at the size you show, not at
+  the game's internal resolution when that is larger.
 - **Input format.** Any format your device can sample with linear filtering.
   If your real frames sit inside a larger image (padding, letterbox), pass an
   `active_rect`. Off-origin or larger-than-picture inputs need
@@ -126,11 +122,39 @@ the layout you declared.
   previous pair's motion). Submit every ZeroFG command buffer to the same
   queue, in the order you recorded them.
 - **Sequence.** `Image::sequence` identifies the real frame: any strictly
-  increasing number, `0` for unknown. ZeroFG reuses the previous pair's motion
-  only when the new pair starts on the frame the previous pair ended on, with
-  the same distance between them. After a gap, a seek, a pause or a resolution
-  change, it simply starts fresh. Feeding consecutive pairs (A→B, B→C, C→D)
-  gives the best result.
+  increasing number, `0` for unknown. ZeroFG reuses what it kept from the
+  previous pair (the frame it prepared, the motion it starts from) only when
+  the new pair starts on the frame the previous pair ended on. After a gap, a
+  seek, a pause or a resolution change, it simply starts fresh. Feeding
+  consecutive pairs (A→B, B→C, C→D) gives the best result and the lowest cost.
+- **Scene cuts.** Both engines notice a cut (the two frames have little in
+  common where they sit) and show the later frame whole instead of a blend of
+  two scenes.
+
+## 4b. The HUD (optional)
+
+A host that sees how the game draws its HUD can hand it over, and the HUD then
+stays crisp and in place over a moving world. Draw every HUD draw a second
+time, with the game's own blend, into two planes the size of the frame: one
+cleared to black (`p`) and one cleared to white (`w`). Every blend is
+`out = P + under * Q`, so `p` is what the HUD adds and `w - p` how much of the
+picture under it still shows, per channel.
+
+```cpp
+zerofg::Interpolator::HudPlanes hud_a{plane_p_of_a, plane_w_of_a};
+zerofg::Interpolator::HudPlanes hud_b{plane_p_of_b, plane_w_of_b};
+status = zerofg->Interpolate(command_buffer, frame_context_index,
+                             previous, current, 0.5f, output, hud_a, hud_b);
+```
+
+The HUD that is the same in both frames and that both pairs of planes explain
+is lifted off them, the frame is generated without it, and the later frame's
+HUD is put back on exactly those pixels. A HUD that moves or changes stays in
+the frames, and Zero holds it in place where it can. Planes may sit anywhere in
+their images (their own `active_rect`), in any sampled colour format; the frames
+must be `A2B10G10R10_UNORM_PACK32`. A missing plane, or one that does not fit,
+makes the call exactly the one without planes: the HUD path never fails a
+frame. ARMSX2's ZeroGS mode draws the planes from the PS2's GS.
 
 ## 5. Synchronize
 
@@ -189,6 +213,11 @@ XenDroid-ZeroFG:
 - **Don't let the display slow the game.** If presentation blocks (a busy
   compositor, a system frame cap), show fewer generated frames rather than
   making the game wait.
+- **Tell the presenter about the cuts you know.** A host that knows a frame
+  starts a new scene (ARMSX2 reads it from the GS: the frame shares few
+  textures with the one before) sets `content_break` on that frame's
+  publication, and the presenter shows it with no generated frame across the
+  cut.
 - **One output per display refresh.** Assign each output its own refresh, in
   order. Otherwise two outputs can land on the same refresh and one is lost.
 - **Give ZeroFG's work GPU priority.** When the game saturates the GPU, frame

@@ -1,0 +1,32 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// A hole in the matte, on one picture only, looks like an occlusion to the render, and the block that comes of it is the pop: the inside of a flat bar stands out from nothing and drops off the matte, and the
+// closing's square leaves a straight-edged hole. A point with matte around it in all four directions goes back, unless a surface explains what has texture there: that is something seen through a hole for real.
+// pc.a = (side, reach in lattice points).
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (q.x >= LW || q.y >= LH) return;
+  int side = pc.a.x, reach = pc.a.y, p = q.y * LW + q.x;
+  float here = plan[planOf(P_TMP, side, p)];
+  // Most of the lattice is matte or far from it: read what decides first.
+  if (here > 0.5 || plan[planOf(P_HUD, 0, p)] > 0.5) {
+    plan[planOf(P_MASK, side, p)] = here;
+    return;
+  }
+  const ivec2 dirs[4] = ivec2[4](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1));
+  int around = 0;
+  for (int e = 0; e < 4; ++e) {
+    bool found = false;
+    for (int k = 1; k <= 4; ++k) {
+      ivec2 t = q + dirs[e] * (reach * k / 4), inner = clamp(t, ivec2(0), ivec2(LW - 1, LH - 1));
+      found = found || (t == inner && plan[planOf(P_TMP, side, inner.y * LW + inner.x)] > 0.5);
+    }
+    around += found ? 1 : 0;
+  }
+  float bg = plan[planOf(P_BG, side, p)], textured = stat[statOf(1, side, p)];
+  bool explained = bg >= 0.0 && bg <= u.gate[side] && textured >= u.th0.y;
+  plan[planOf(P_MASK, side, p)] = around == 4 && !explained ? 1.0 : 0.0;
+}

@@ -1,0 +1,22 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Which cells the fit explains: they leave what is still to explain, whether or not the surface is kept, as on the CPU. Every cell in its own lane.
+#include "rc7_common.glsl"
+#include "rc7_search.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  int fw = u.cfg2.x, fh = u.cfg2.y;
+  if (q.x >= fw || q.y >= fh || s_stop != 0) return;
+  int i = q.y * fw + q.x;
+  uint bit = 1u << (i & 31);
+  if ((s_rest[i >> 5] & bit) == 0u) return;
+  vec2 scale = searchScale(), pos = (vec2(q) + 0.5) * u.cell.xy;
+  vec2 to = (pos + snap[i].xy) * scale - 1.0;
+  vec2 r = (hApply(s_cur[0], s_cur[1], s_cur[2], pos * scale - 1.0) - to) / scale;
+  if (dot(r, r) >= AGREE_PX * AGREE_PX) return;
+  atomicAnd(s_rest[i >> 5], ~bit);
+  atomicOr(s_claim[i >> 5], bit);
+  atomicAdd(s_inliers, 1);
+}

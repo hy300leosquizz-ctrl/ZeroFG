@@ -1,0 +1,35 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The screen as the host knows it (SetScreenTruth: the GS modes' HUD planes, through the HUD layer's code image, src/hud/hud_layer.h; at
+// the Reals' size, code / 255): 1 a HUD pixel in A, 2 in B, 4 one the layer takes out of both Reals and puts back after the engine
+// (shaders/hud/hud_common.glsl). The screen is where the layer leaves a HUD in the pictures (one that changes between A and B, or that
+// its planes do not explain) and that HUD stays in place: the cell's HUD covers the same pixels in A and in B (digits that change on a
+// panel, a coin turning in its slot). One that moves (a bouncing icon) stays the surfaces' to carry. Runs beside the guess
+// (rc7_hud.comp) and writes the screen's memory side (unused while the memory is off); rc7_hudrule.comp adds it to the guess after its
+// rule, which never takes it back. Without it the HUD the layer leaves is read as something to move: pieces of a panel's digits land
+// below the panel (FF12).
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 38) uniform sampler2D screenTruth;
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (q.x >= LW || q.y >= LH) return;
+  int p = q.y * LW + q.x;
+  ivec2 c0 = q * S;
+  int in_a = 0, in_b = 0, in_both = 0, left = 0;
+  for (int y = 0; y < S; ++y)
+    for (int x = 0; x < S; ++x) {
+      ivec2 t = min(c0 + ivec2(x, y), ivec2(W - 1, H_ - 1));
+      uint code = uint(round(texelFetch(screenTruth, t, 0).r * 255.0));
+      bool a = (code & 1u) != 0u, b = (code & 2u) != 0u;
+      in_a += a ? 1 : 0;
+      in_b += b ? 1 : 0;
+      in_both += a && b ? 1 : 0;
+      left += (a || b) && (code & 4u) == 0u ? 1 : 0;
+    }
+  // In place: nearly every HUD pixel of the cell is HUD in both pictures.
+  bool in_place = 10 * in_both >= 9 * max(in_a, in_b);
+  plan[planOf(P_HUD, 1, p)] = left > 0 && in_place ? 1.0 : 0.0;
+}

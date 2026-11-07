@@ -1,0 +1,78 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// df: the compact cleanup, one pass. The final pass wrote the middle picture as A2B10G10R10 words with the doubt indicator in bit 30 (midw); one
+// TILE x TILE group loads its (TILE + 8)^2 neighbourhood once (clamped to the picture, as the buffer form's reads), sums the indicator over 9 x 9 in
+// shared memory (rows, then columns) and blends the doubtful pixels into their 5 x 5 box: the same arithmetic as df_dens + df_clean on 10-bit
+// colour, with 8 bytes of traffic per pixel instead of about 50. ZFG_DF_TILE: 16 (the default) or 8 (a quarter of the shared memory per group,
+// for GPUs whose occupancy it limits).
+// pc.a = (W, H, the cleanup (0 none, 1 the box, 2 the Real B, 3 half of each), 0), pc.p = (low, high, 0, 0). Writes A2B10G10R10 words (ZFG_DF_IMAGE_OUT: an rgb10_a2 storage image instead).
+#include "df_common.glsl"
+#ifndef ZFG_DF_TILE
+#define ZFG_DF_TILE 16
+#endif
+layout(local_size_x = ZFG_DF_TILE, local_size_y = ZFG_DF_TILE) in;
+
+const uint TL = ZFG_DF_TILE, TB = ZFG_DF_TILE + 8, THREADS = ZFG_DF_TILE * ZFG_DF_TILE;
+shared uint tile[TB][TB];
+shared float rows[TB][TL];
+
+vec3 dec(uint w) { return vec3(float(w & 1023u), float((w >> 10) & 1023u), float((w >> 20) & 1023u)) / 1023.0; }
+
+void main() {
+  int W = pc.a.x, H = pc.a.y;
+  ivec2 base = ivec2(gl_WorkGroupID.xy) * int(TL);
+  // Listed: DF_OPTS 1.
+  if (DF_OPTS != 0) {
+    int tw = (W + int(TL) - 1) / int(TL), th = (H + int(TL) - 1) / int(TL);
+    uint entry = c_words[uint(tw * th) + gl_WorkGroupID.x];
+    base = ivec2(entry & 0xffffu, entry >> 16) * int(TL);
+  }
+  uint li = gl_LocalInvocationIndex;
+  for (uint k = li; k < TB * TB; k += THREADS) {
+    ivec2 p = clamp(base - 4 + ivec2(int(k % TB), int(k / TB)), ivec2(0), ivec2(W - 1, H - 1));
+    tile[k / TB][k % TB] = midw[p.y * W + p.x];
+  }
+  barrier();
+  for (uint k = li; k < TB * TL; k += THREADS) {
+    uint ty = k / TL, tx = k % TL;
+    float s = 0.0;
+    for (uint i = 0u; i < 9u; ++i) s += float((tile[ty][tx + i] >> 30) & 1u);
+    rows[ty][tx] = s;
+  }
+  barrier();
+  int lx = int(gl_LocalInvocationID.x), ly = int(gl_LocalInvocationID.y);
+  ivec2 p = base + ivec2(lx, ly);
+  if (p.x >= W || p.y >= H) return;
+  vec3 c = dec(tile[ly + 4][lx + 4]);
+  if (pc.a.z != 0) {
+    float d = 0.0;
+    for (int j = 0; j < 9; ++j) d += rows[ly + j][lx];
+    float r = smoothstep(pc.p.x, pc.p.y, d / 81.0);
+#ifdef ZFG_DF_IMAGE_OUT
+    // The product's listed cleanup follows final_opts 2048: that pass already
+    // stored this exact decoded RGB10 word with alpha 1. Both group barriers
+    // are complete, so a zero blend needs no second image store.
+    if ((DF_PRODUCT_OPTS & 8) != 0 && DF_OPTS == 1 && pc.a.z == 1 && r == 0.0) return;
+#endif
+    if (r > 0.0) {
+      // pc.a.z = 1: the 5 x 5 box; 2: the Real B where it stands (the RC3 way to fail: one sharp picture, never two); 3: half of each.
+      vec3 s = vec3(0.0);
+      if (pc.a.z != 2) {
+        for (int j = 2; j <= 6; ++j)
+          for (int k = 2; k <= 6; ++k) s += dec(tile[ly + j][lx + k]);
+        s /= 25.0;
+      }
+      if (pc.a.z >= 2) {
+        vec3 rb = texelFetch(realB, p, 0).rgb;
+        s = pc.a.z == 2 ? rb : 0.5 * (s + rb);
+      }
+      c = mix(c, s, r);
+    }
+  }
+#ifdef ZFG_DF_IMAGE_OUT
+  imageStore(out_image, p, vec4(clamp(c, 0.0, 1.0), 1.0));
+#else
+  uvec3 q = uvec3(clamp(c, 0.0, 1.0) * 1023.0 + 0.5);
+  out_words[p.y * W + p.x] = q.r | (q.g << 10) | (q.b << 20) | (3u << 30);
+#endif
+}

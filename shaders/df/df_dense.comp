@@ -1,0 +1,73 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// df: densification, one invocation per pixel: the average of the patches covering it, each weighted by 1 / max(1, |I1(x + u) - I0(x)|).
+// Patch i starts at min(i S, w - P): the last one hugs the border, so near the border the window reaches it.
+// pc.a = (w, h, the weight exponent k (0 or 1: DIS), luma offset I1), pc.b = (patches x, patches y, flow offset, P), pc.c = (S, 1 to also store the flow texture, 1 for
+// both directions in one dispatch (as df_patch_sg: z is the direction), direction: 1 when I0 is B); lumas from the textures.
+#define DF_LEVEL_SIZE(T) ivec2(pc.a.x, pc.a.y)
+#include "df_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+int patch_start(int i, int w, int P, int S) { return max(0, min(i * S, w - P)); }
+
+void main() {
+  int x = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
+  int w = pc.a.x, h = pc.a.y;
+  if (x >= w || y >= h) return;
+  int nx = pc.b.x, ny = pc.b.y, P = pc.b.w, S = pc.c.x;
+  bool zd = pc.c.z != 0;
+  int d = DF_DIR;
+  int fo = pc.b.z + (zd ? d * w * h : 0), pb = zd ? d * nx * ny : 0;
+  bool i0b = d != 0, i1b = !i0b;
+  float a0 = tex_at(i0b, x, y);
+  vec2 su = vec2(0.0);
+  float sw = 0.0;
+  int k = fo + y * w + x;
+  // Inside the picture exactly four patches cover a pixel, with stride 4 and size 8: no loop and no branch for them.
+  if (S == 4 && P == 8 && x >= 4 && y >= 4 && x < w - 8 && y < h - 8) {
+#define DF_ONE_PATCH(I, J) { \
+      vec2 u = pflow[pb + (J) * nx + (I)]; \
+      float wt = 1.0 / max(1.0, abs(tex_bil(i1b, float(x) + u.x, float(y) + u.y) - a0)); \
+      if (DF_OPTS > 1) wt = pow(wt, float(DF_OPTS)); \
+      su += wt * u; \
+      sw += wt; \
+    }
+    int i1 = x / 4, j1 = y / 4;
+    DF_ONE_PATCH(i1 - 1, j1 - 1)
+    DF_ONE_PATCH(i1, j1 - 1)
+    DF_ONE_PATCH(i1 - 1, j1)
+    DF_ONE_PATCH(i1, j1)
+    if ((DF_PRODUCT_OPTS & 16) != 0 && pc.c.y != 0) {
+      // Product RZ consumes the finest answer through its texture. Up will
+      // replace this level's buffer before the next pair's patch reads it.
+      store_flow_t(d, x, y, su / sw);
+    } else {
+      flow[k] = su / sw;
+      if (pc.c.y != 0) store_flow_t(d, x, y, su / sw);
+    }
+    return;
+  }
+  int ilo = max(0, (x - P + 1) / S - 1), ihi = x >= w - P ? nx - 1 : min(nx - 1, x / S + 1);
+  int jlo = max(0, (y - P + 1) / S - 1), jhi = y >= h - P ? ny - 1 : min(ny - 1, y / S + 1);
+  for (int j = jlo; j <= jhi; ++j) {
+    int y0 = patch_start(j, h, P, S);
+    if (y < y0 || y >= y0 + P) continue;
+    for (int i = ilo; i <= ihi; ++i) {
+      int x0 = patch_start(i, w, P, S);
+      if (x < x0 || x >= x0 + P) continue;
+      vec2 u = pflow[pb + j * nx + i];
+      float r = abs(tex_bil(i1b, float(x) + u.x, float(y) + u.y) - a0);
+      float wt = 1.0 / max(1.0, r);
+      if (DF_OPTS > 1) wt = pow(wt, float(DF_OPTS));  // k > 1: the best-matching patch dominates where patches straddle a motion boundary
+      su += wt * u;
+      sw += wt;
+    }
+  }
+  if ((DF_PRODUCT_OPTS & 16) != 0 && pc.c.y != 0) {
+    if (sw > 0.0) store_flow_t(d, x, y, su / sw);
+    else store_flow_t(d, x, y, flow[k]);  // preserve the original Up result when no valid blend was made
+  } else {
+    if (sw > 0.0) flow[k] = su / sw;
+    if (pc.c.y != 0) store_flow_t(d, x, y, flow[k]);   // the finest level of the tx form, when no refinement follows
+  }
+}

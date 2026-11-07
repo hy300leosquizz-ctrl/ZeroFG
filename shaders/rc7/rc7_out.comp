@@ -1,0 +1,12 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The core only: the finished picture leaves for the host's image.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 33, rgb10_a2) uniform writeonly image2D outImage;
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (q.x >= W || q.y >= H_) return;
+  imageStore(outImage, q, vec4(wordColour(out_words[q.y * W + q.x]), 1.0));
+}

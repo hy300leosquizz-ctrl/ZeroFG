@@ -1,0 +1,23 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// A square grows or shrinks a plan's 0/1 points (the CPU form's components become an opening and a closing here). pc.a = (side, input plan, output plan, radius), pc.b.x: 0 grow, 1 shrink.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (q.x >= LW || q.y >= LH) return;
+  int side = pc.a.x, from_p = pc.a.y, to_p = pc.a.z, r = pc.a.w, p = q.y * LW + q.x;
+  bool shrink = pc.b.x != 0;
+  float v = shrink ? 1.0 : 0.0;
+  int stride = (R_OPTS & 32768) != 0 ? r : max(1, r / 2);
+  for (int b = -r; b <= r; b += stride)
+    for (int a = -r; a <= r; a += stride) {
+      ivec2 t = q + ivec2(a, b), inner = clamp(t, ivec2(0), ivec2(LW - 1, LH - 1));
+      float c = plan[planOf(from_p, side, inner.y * LW + inner.x)];
+      c = t == inner ? c : (shrink ? 1.0 : 0.0);
+      v = shrink ? min(v, c) : max(v, c);
+    }
+  bool hud_here = plan[planOf(P_HUD, 0, p)] > 0.5;
+  plan[planOf(to_p, side, p)] = hud_here && to_p == P_MASK ? 0.0 : v;
+}

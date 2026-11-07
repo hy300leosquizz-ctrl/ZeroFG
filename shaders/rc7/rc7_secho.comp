@@ -1,0 +1,38 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// A fence, bars or tiles repeat, so a whole period off fits the two pictures almost as well as the truth, and at an odd number of periods the middle falls between the bars. If the surface is right, what it
+// claims in A has nothing to do with A a difference of motions away; if it is an echo of a bigger one, it is the same picture. Every point of a sparse grid in its own lane; the sums for the last pass to read.
+#include "rc7_common.glsl"
+#include "rc7_search.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+float lumaA(vec2 pos) { return dot(textureLod(realA, pos / sizeF(), 0.0).rgb, LUMA); }
+
+void main() {
+  if (s_stop != 0) return;
+  int found = s_found;
+  if (found <= 0) return;
+  int step_px = max(8, W / 80);
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  vec2 pos = (vec2(q) + 1.0) * float(step_px) + 0.5;
+  if (pos.x + 1.0 >= float(W) || pos.y + 1.0 >= float(H_)) return;
+  // pc.a.x: 1 what is claimed is in the small picture's blocks.
+  int fw = pc.a.x != 0 ? pc.a.y : u.cfg2.x, fh = pc.a.x != 0 ? pc.a.z : u.cfg2.y;
+  vec2 cell_size = pc.a.x != 0 ? vec2(float(pc.a.w)) : u.cell.xy;
+  ivec2 c = min(ivec2(pos / cell_size), ivec2(fw - 1, fh - 1));
+  int i = c.y * fw + c.x;
+  if ((s_claim[i >> 5] & (1u << (i & 31))) == 0u) return;
+  vec2 scale = searchScale(), n = pos * scale - 1.0;
+  vec2 mine = hApply(s_cur[0], s_cur[1], s_cur[2], n);
+  float here = lumaA(pos);
+  float weight = min(0.25, abs(lumaA(pos + vec2(1.0, 0.0)) - lumaA(pos - vec2(1.0, 0.0))) + abs(lumaA(pos + vec2(0.0, 1.0)) - lumaA(pos - vec2(0.0, 1.0))));
+  for (int k = 0; k < found; ++k) {
+    vec2 d = (mine - hApply(s_H[k * 3], s_H[k * 3 + 1], s_H[k * 3 + 2], n)) / scale;
+    if (dot(d, d) < 16.0) continue;
+    vec2 there = pos + d;
+    if (there.x < 0.0 || there.y < 0.0 || there.x >= float(W) - 1.0 || there.y >= float(H_) - 1.0) continue;
+    atomicAdd(s_detail[k], int(weight * 1024.0));
+    atomicAdd(s_same[k], int(max(0.0, weight - abs(here - lumaA(there))) * 1024.0));
+  }
+}

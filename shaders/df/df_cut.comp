@@ -1,0 +1,63 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// df: a cut has no middle, so the pair shows B whole. The co-located correlation of the two lumas on a small level of the pyramid: real motion stays well above the bar, a cut does not. pc.a = (w, h, 0: the
+// sums, 1: the decision, in one lane), pc.b.x = the bar in thousandths. The textures of the set are that level's.
+#define DF_LEVEL_SIZE(T) ivec2(pc.a.x, pc.a.y)
+#include "df_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+const int CUT_SHARED = (DF_PRODUCT_OPTS & 2) != 0 ? 64 : 1;
+shared uvec4 cut_sums4[CUT_SHARED];
+shared uvec2 cut_sums2[CUT_SHARED];
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (pc.a.z == 0) {
+    // Reduce exact uint sums within the 8 x 8 group before
+    // adding them globally. Even the image's partial groups reach every barrier.
+    if ((DF_PRODUCT_OPTS & 2) != 0) {
+      uint lane = gl_LocalInvocationIndex;
+      uvec4 sums4 = uvec4(0u);
+      uvec2 sums2 = uvec2(0u);
+      if (q.x < pc.a.x && q.y < pc.a.y) {
+        uint a = uint(tex_at(false, q.x, q.y) + 0.5), b = uint(tex_at(true, q.x, q.y) + 0.5);
+        sums4 = uvec4(a, b, a * a, b * b);
+        sums2 = uvec2(a * b, 1u);
+      }
+      cut_sums4[lane] = sums4;
+      cut_sums2[lane] = sums2;
+      barrier();
+      for (uint stride = 32u; stride != 0u; stride >>= 1u) {
+        if (lane < stride) {
+          cut_sums4[lane] += cut_sums4[lane + stride];
+          cut_sums2[lane] += cut_sums2[lane + stride];
+        }
+        barrier();
+      }
+      if (lane == 0u) {
+        atomicAdd(c_corr[0], cut_sums4[0].x);
+        atomicAdd(c_corr[1], cut_sums4[0].y);
+        atomicAdd(c_corr[2], cut_sums4[0].z);
+        atomicAdd(c_corr[3], cut_sums4[0].w);
+        atomicAdd(c_corr[4], cut_sums2[0].x);
+        atomicAdd(c_corr[5], cut_sums2[0].y);
+      }
+      return;
+    }
+    if (q.x >= pc.a.x || q.y >= pc.a.y) return;
+    uint a = uint(tex_at(false, q.x, q.y) + 0.5), b = uint(tex_at(true, q.x, q.y) + 0.5);
+    atomicAdd(c_corr[0], a);
+    atomicAdd(c_corr[1], b);
+    atomicAdd(c_corr[2], a * a);
+    atomicAdd(c_corr[3], b * b);
+    atomicAdd(c_corr[4], a * b);
+    atomicAdd(c_corr[5], 1u);
+    return;
+  }
+  if (q != ivec2(0)) return;
+  // Flat against flat is no cut; flat against a picture is.
+  float n = max(1.0, float(c_corr[5])), mean_a = float(c_corr[0]) / n, mean_b = float(c_corr[1]) / n;
+  float va = float(c_corr[2]) / n - mean_a * mean_a, vb = float(c_corr[3]) / n - mean_b * mean_b, cov = float(c_corr[4]) / n - mean_a * mean_b;
+  float correlation = va * vb > 1.0 ? cov / sqrt(va * vb) : (max(va, vb) > 16.0 ? 0.0 : 1.0);
+  c_cut = correlation * 1000.0 < float(pc.b.x) ? 1 : 0;
+}

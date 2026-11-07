@@ -1,0 +1,26 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The fit is decided: too few cells end the search; a surface much like one already found, or an echo of one, adds nothing; otherwise it is kept, with its inverse and the map from the middle.
+#include "rc7_common.glsl"
+#include "rc7_search.glsl"
+layout(local_size_x = 1) in;
+
+void main() {
+  if (s_stop != 0) return;
+  int count = s_inliers;
+  s_inliers = 0;
+  int words = (cellCount() + 31) / 32;
+  for (int w = 0; w < words; ++w) s_claim[w] = 0u;
+  if (count < max(16, cellCount() / 32)) {
+    s_stop = 1;
+    return;
+  }
+  bool add = !alreadyKnown();
+  for (int k = 0; k < 8; ++k) {
+    s_detail[k] = 0;
+    s_same[k] = 0;
+  }
+  if (!add) return;
+  keepSurface(int(float(count) * u.cell.x * u.cell.y));
+  if (s_found >= 5) s_stop = 1;
+}

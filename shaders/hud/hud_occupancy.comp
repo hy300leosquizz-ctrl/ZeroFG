@@ -1,0 +1,48 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+// HUD layer, first (hud_common.glsl): which 16 x 16 tiles hold a HUD, from one sample in every 4 x 4 block of A's and B's planes. One
+// sample per thread, a workgroup covering 4 x 4 tiles (each tile 4 x 4 threads), the tile's answer gathered in shared memory: wide and
+// shallow, for a GPU that waits on memory rather than on arithmetic. The prep pass reads the planes only in those tiles and their
+// neighbours (a HUD element the samples miss in one tile is caught through the next one; one they miss everywhere stays in the Reals
+// whole: doubt = world).
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0) uniform sampler2D p_a;
+layout(binding = 1) uniform sampler2D w_a;
+layout(binding = 2) uniform sampler2D p_b;
+layout(binding = 3) uniform sampler2D w_b;
+layout(std430, binding = 4) writeonly buffer HudOccupancy {
+  uint occupied[];  // one per tile, row by row
+};
+
+#include "hud_common.glsl"
+
+shared uint s_hud[16];
+
+void main() {
+  ivec2 l = ivec2(gl_LocalInvocationID.xy);
+  uint li = gl_LocalInvocationIndex;
+  if (li < 16u) {
+    s_hud[li] = 0u;
+  }
+  barrier();
+  ivec2 tile_count = (pc.extent + 15) / 16;
+  ivec2 t = ivec2(gl_WorkGroupID.xy) * 4 + l / 4;  // this thread's tile
+  ivec2 p = min(t * 16 + (l % 4) * 4 + 1, pc.extent - 1);
+  if (all(lessThan(t, tile_count))) {
+    vec3 pa = texelFetch(p_a, pc.p_a_origin + p, 0).rgb;
+    vec3 qa = Q(pa, texelFetch(w_a, pc.w_a_origin + p, 0).rgb);
+    vec3 pb = texelFetch(p_b, pc.p_b_origin + p, 0).rgb;
+    vec3 qb = Q(pb, texelFetch(w_b, pc.w_b_origin + p, 0).rgb);
+    if ((1.0 - (qa.r + qa.g + qa.b) / 3.0) > kHud || (1.0 - (qb.r + qb.g + qb.b) / 3.0) > kHud) {
+      atomicOr(s_hud[(l.y / 4) * 4 + l.x / 4], 1u);
+    }
+  }
+  barrier();
+  if (li < 16u) {
+    ivec2 tt = ivec2(gl_WorkGroupID.xy) * 4 + ivec2(int(li) % 4, int(li) / 4);
+    if (all(lessThan(tt, tile_count))) {
+      occupied[tt.y * tile_count.x + tt.x] = s_hud[li];
+    }
+  }
+}

@@ -3,6 +3,7 @@
 #include <utility>
 
 #include "algorithm.h"
+#include "hud/hud_layer.h"
 
 namespace zerofg {
 
@@ -23,8 +24,7 @@ std::unique_ptr<Interpolator> Interpolator::Create(
       create_info.frame_context_count > 8) {
     return fail(Status::kInvalidArgument);
   }
-  if (create_info.mode != Mode::kZero &&
-      create_info.mode != Mode::kReallyZero) {
+  if (create_info.mode != Mode::kZero && create_info.mode != Mode::kReallyZero) {
     return fail(Status::kInvalidArgument);
   }
 
@@ -45,20 +45,19 @@ std::unique_ptr<Interpolator> Interpolator::Create(
       !create_info.capabilities.synchronization2_enabled) {
     return fail(Status::kUnsupported);
   }
-  // The frame contexts share the temporal history.
-  std::shared_ptr<Rc3Shared> shared = CreateRc3Shared(create_info);
-  if (!shared) {
-    return fail(Status::kUnsupported);
-  }
-
+  // Both engines have one context whatever the frame context index: the surfaces, the search under way and the flow's
+  // starts are history, and one per index would see only some of the pairs and work from history several pairs old.
+  // What must differ per index is only the descriptor sets that bind the Reals and the output: they keep one copy each.
+  const bool zero = create_info.mode == Mode::kZero;
+  const uint32_t context_count = 1u;
   std::vector<std::unique_ptr<AlgorithmContext>> contexts;
-  contexts.reserve(create_info.frame_context_count);
-  for (uint32_t i = 0; i < create_info.frame_context_count; ++i) {
+  contexts.reserve(context_count);
+  for (uint32_t i = 0; i < context_count; ++i) {
     CreateInfo context_create_info = create_info;
     context_create_info.backend = resolved_backend;
     Status context_status = Status::kSuccess;
     std::unique_ptr<AlgorithmContext> context =
-        CreateRc3Context(context_create_info, shared, &context_status);
+        zero ? CreateRc7Context(context_create_info, &context_status) : CreateDfContext(context_create_info, &context_status);
     if (!context) {
       return fail(context_status);
     }
@@ -68,13 +67,16 @@ std::unique_ptr<Interpolator> Interpolator::Create(
   if (status) {
     *status = Status::kSuccess;
   }
+  CreateInfo stored = create_info;
+  stored.backend = resolved_backend;
   return std::unique_ptr<Interpolator>(
-      new Interpolator(std::move(contexts)));
+      new Interpolator(std::move(contexts), create_info.frame_context_count, stored));
 }
 
 Interpolator::Interpolator(
-    std::vector<std::unique_ptr<AlgorithmContext>> contexts)
-    : contexts_(std::move(contexts)) {}
+    std::vector<std::unique_ptr<AlgorithmContext>> contexts,
+    uint32_t frame_context_count, const CreateInfo& create_info)
+    : contexts_(std::move(contexts)), frame_context_count_(frame_context_count), create_info_(create_info) {}
 
 Interpolator::~Interpolator() = default;
 
@@ -91,6 +93,15 @@ Status Interpolator::Resize(uint32_t width, uint32_t height,
       return status;
     }
   }
+  width_ = width;
+  height_ = height;
+  input_format_ = input_format;
+  output_format_ = output_format;
+  // The HUD layer follows the new size on its next use.
+  if (hud_ && hud_->Resize(width, height, input_format, output_format) != Status::kSuccess) {
+    hud_.reset();
+    hud_failed_ = true;
+  }
   return Status::kSuccess;
 }
 
@@ -99,11 +110,48 @@ Status Interpolator::Interpolate(VkCommandBuffer command_buffer,
                                  const Image& previous,
                                  const Image& current, float phase,
                                  const Image& output) {
-  if (frame_context_index >= contexts_.size()) {
+  if (frame_context_index >= frame_context_count_) {
     return Status::kInvalidArgument;
   }
-  return contexts_[frame_context_index]->Interpolate(
+  return contexts_[contexts_.size() == 1 ? 0 : frame_context_index]->Interpolate(
       command_buffer, previous, current, phase, output);
+}
+
+Status Interpolator::Interpolate(VkCommandBuffer command_buffer,
+                                 uint32_t frame_context_index,
+                                 const Image& previous,
+                                 const Image& current, float phase,
+                                 const Image& output,
+                                 const HudPlanes& previous_hud,
+                                 const HudPlanes& current_hud) {
+  if (frame_context_index >= frame_context_count_) {
+    return Status::kInvalidArgument;
+  }
+  AlgorithmContext* const context = contexts_[contexts_.size() == 1 ? 0 : frame_context_index].get();
+  const auto plain = [&]() { return context->Interpolate(command_buffer, previous, current, phase, output); };
+  if (previous_hud.p.image == VK_NULL_HANDLE || previous_hud.w.image == VK_NULL_HANDLE || current_hud.p.image == VK_NULL_HANDLE ||
+      current_hud.w.image == VK_NULL_HANDLE || hud_failed_ || width_ == 0) {
+    return plain();
+  }
+  if (!hud_) {
+    hud_ = HudLayer::Create(create_info_);
+    if (!hud_ || hud_->Resize(width_, height_, input_format_, output_format_) != Status::kSuccess) {
+      hud_.reset();
+      hud_failed_ = true;
+      return plain();
+    }
+  }
+  const Status status = hud_->Record(
+      command_buffer, previous, current, previous_hud, current_hud, output,
+      [&](const Image& a, const Image& b, const Image& out, const Image& screen) {
+        // What the layer leaves in the pictures is HUD too: the engine's screen (RC7) hears it from the planes.
+        context->SetScreenTruth(&screen);
+        const Status s = context->Interpolate(command_buffer, a, b, phase, out);
+        context->SetScreenTruth(nullptr);
+        return s;
+      });
+  // A plane that does not fit this pair: the pair without the layer (nothing was recorded for it).
+  return status == Status::kUnsupported ? plain() : status;
 }
 
 }  // namespace zerofg

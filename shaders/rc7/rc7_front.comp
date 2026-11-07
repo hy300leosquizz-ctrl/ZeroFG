@@ -1,0 +1,105 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The front's field, PatchMatch by jumps. pc.a = (unused, flip of the input, jump, round), pc.b.x: 1 the first evaluation (every surface, the cell's vector and the dense flow are candidates, no input); after it the other picture's answer is a candidate.
+// Each point reads the previous round only, so every point of both pictures can run at once. Only the matte's points run, listed one per lane: a wave lasts as long as its slowest lane, so what counts is how many waves there are. Everywhere else the field was cleared.
+// No branch in a sample: a branch costs as much as 15 to 40 instructions, and every lane would wait for the slowest anyway, so a sample that does not count just weighs 0. One body for all the candidates: the fetches of a candidate leave together and wait once.
+#include "rc7_common.glsl"
+layout(local_size_x = 64) in;
+
+const bool THIN_PATCH = (R_OPTS & 4096) != 0;
+const int PATCH_SAMPLES = THIN_PATCH ? 8 : 16;
+
+// The patch in this picture is read once; every candidate only reads the other picture.
+vec3 patch_colour[PATCH_SAMPLES];
+float patch_like[PATCH_SAMPLES];
+
+void readPatch(ivec2 q, vec3 centre) {
+  for (int n = 0; n < PATCH_SAMPLES; ++n) {
+    int j = THIN_PATCH ? THIN[n] : n;
+    ivec2 t = q + IPATCH[j], inner = clamp(t, ivec2(0), ivec2(LW - 1, LH - 1));
+    vec3 c = sampleReal(THIS_SIDE, latCentre(t));
+    vec3 d = abs(c - centre);
+    float mask = plan[planOf(P_MASK, THIS_SIDE, inner.y * LW + inner.x)], like = 1.0 / (1.0 + 12.0 * (d.x + d.y + d.z));
+    patch_colour[n] = c;
+    patch_like[n] = all(bvec3(t.x == inner.x, t.y == inner.y, mask >= 0.5)) ? like : 0.0;
+  }
+}
+
+float patchCost(vec2 pos, vec2 v) {
+  float sum = 0.0, weight = 0.0;
+  for (int n = 0; n < PATCH_SAMPLES; ++n) {
+    int j = THIN_PATCH ? THIN[n] : n;
+    vec2 to = pos + PATCH[j] * float(S) + v;
+    float differ = l1(sampleReal(1 - THIS_SIDE, to), patch_colour[n]), like = insideM(to) ? patch_like[n] : 0.0;
+    sum += like * min(differ, 0.25);
+    weight += like;
+  }
+  return weight > (THIN_PATCH ? 0.125 : 0.25) ? sum / weight : 1.0;
+}
+
+uint rng_state;
+float random01() {
+  rng_state ^= rng_state << 13;
+  rng_state ^= rng_state >> 17;
+  rng_state ^= rng_state << 5;
+  return float(rng_state & 0xffffu) / 65535.0;
+}
+
+void main() {
+  int side = THIS_SIDE, flip = pc.a.y, jump = pc.a.z, round_i = pc.a.w;
+  uint at = gl_GlobalInvocationID.x;
+  if (at >= f_count[side]) return;
+  uint packed_q = f_list[uint(side * ln()) + at];
+  ivec2 q = ivec2(packed_q & 0xffffu, packed_q >> 16);
+  int p = q.y * LW + q.x;
+  int cost_in = flip == 0 ? P_FCOST0 : P_FCOST1, cost_out = flip == 0 ? P_FCOST1 : P_FCOST0;
+  vec2 pos = latCentre(q);
+  readPatch(q, sampleReal(side, pos));
+  bool first = pc.b.x != 0;
+  vec2 best_v = vec2(0.0), cv = vec2(0.0), fv = vec2(0.0), tv = vec2(0.0);
+  float best = 1.0;
+  if (first) {
+    ivec2 cq = clamp(ivec2(pos / u.cell.xy), ivec2(0), ivec2(u.cfg2.x - 1, u.cfg2.y - 1));
+    cv = cells[cq.y * u.cfg2.x + cq.x].xy;
+    if (side == 1) cv = -cv;
+    ivec2 fq = clamp(ivec2(pos / u.cell.z), ivec2(0), ivec2(u.cfg2.z - 1, u.cfg2.w - 1));
+    fv = dense[u.cfg3.x + side * u.cfg2.z * u.cfg2.w + fq.y * u.cfg2.z + fq.x] * u.cell.z;
+    // B of the previous pair is A of this one: its field, turned around, sits on this very picture; on B it is the same motion, a pair later.
+    tv = front[frontOf(2, 0, p)] * (side == 0 ? -1.0 : 1.0);
+  } else {
+    best_v = front[frontOf(flip, side, p)];
+    best = plan[planOf(cost_in, side, p)];
+    rng_state = uint(q.y) * 2654435761u + uint(q.x) * 7919u + uint(round_i) * 40503u + uint(side) * 69069u + 1u;
+  }
+  // First: the surfaces, the cell's vector, the dense flow. After it: 4 neighbours at the jump, the other picture's answer, 2 random steps around the best so far.
+  int candidates = first ? PLANES + 1 + pc.b.y : 7;
+  bool along_x = !first && pc.b.y != 0 && (round_i & 1) == 0, along_y = !first && pc.b.y != 0 && (round_i & 1) != 0;
+  for (int e = 0; e < candidates; ++e) {
+    vec2 v;
+    bool counts = true;
+    if ((along_x && (e == 2 || e == 3)) || (along_y && (e == 0 || e == 1))) continue;
+    if (first) {
+      if (e + 1 < PLANES) v = surfaceGo(side, e + 1, pos) - pos;
+      else v = e + 1 == PLANES ? cv : e == PLANES ? fv : tv;
+    } else if (e < 4) {
+      ivec2 t = q + ivec2(e == 0 ? -1 : e == 1 ? 1 : 0, e == 2 ? -1 : e == 3 ? 1 : 0) * jump, inner = clamp(t, ivec2(0), ivec2(LW - 1, LH - 1));
+      int n = inner.y * LW + inner.x;
+      float mask = plan[planOf(P_MASK, side, n)];
+      counts = all(bvec3(t.x == inner.x, t.y == inner.y, mask >= 0.5));
+      v = front[frontOf(flip, side, n)];
+    } else if (e == 4) {
+      int o = latIndex(pos + best_v);
+      counts = plan[planOf(P_MASK, 1 - side, o)] > 0.5;
+      v = -front[frontOf(flip, 1 - side, o)];
+    } else {
+      float spread = float(jump * S) * (e == 5 ? 1.0 : 0.25);
+      v = best_v + (vec2(random01(), random01()) - 0.5) * spread;
+    }
+    float c = patchCost(pos, v);
+    bool take = counts && c < best;
+    best = take ? c : best;
+    best_v = take ? v : best_v;
+  }
+  front[frontOf(1 - flip, side, p)] = best_v;
+  plan[planOf(cost_out, side, p)] = best;
+}

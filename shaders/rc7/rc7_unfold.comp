@@ -1,0 +1,43 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// A field that folds is no motion. On a fence the bars repeat, so each point may match a different bar: the vectors change by a whole period over a few points and the bars come out as waves. Nothing rigid
+// stretches like that; a point where most of what is around stretches leaves the matte for the layers below, which are coherent. pc.a = (side, flip of the field, mode). Mode 0 writes the stretch of each
+// point, plus 2 so it tells from the points outside the list, which hold 1; mode 1 decides from those, and so reads no matte while it changes it.
+#include "rc7_common.glsl"
+layout(local_size_x = 64) in;
+
+void main() {
+  int side = THIS_SIDE, flip = pc.a.y, mode = pc.a.z;
+  uint at = gl_GlobalInvocationID.x;
+  if (at >= f_count[side]) return;
+  uint packed_q = f_list[uint(side * ln()) + at];
+  ivec2 q = ivec2(packed_q & 0xffffu, packed_q >> 16);
+  int p = q.y * LW + q.x;
+  if (mode == 0) {
+    const int e = 2;
+    float stretch = 0.0;
+    bool known = false;
+    for (int axis = 0; axis < 2; ++axis) {
+      ivec2 d = axis == 0 ? ivec2(e, 0) : ivec2(0, e), t0 = q - d, t1 = q + d;
+      ivec2 i0 = clamp(t0, ivec2(0), ivec2(LW - 1, LH - 1)), i1 = clamp(t1, ivec2(0), ivec2(LW - 1, LH - 1));
+      int m0 = i0.y * LW + i0.x, m1 = i1.y * LW + i1.x;
+      bool both = all(bvec4(t0 == i0, t1 == i1, plan[planOf(P_MASK, side, m0)] >= 0.5, plan[planOf(P_MASK, side, m1)] >= 0.5));
+      float apart = length(front[frontOf(flip, side, m1)] - front[frontOf(flip, side, m0)]);
+      stretch = max(stretch, both ? apart : 0.0);
+      known = known || both;
+    }
+    // On the matte's edge there is nothing to compare with: it goes by what is inside, or stays if all of it is that thin, as a rod is.
+    plan[planOf(P_FCOST0, side, p)] = known ? 2.0 + stretch / float(2 * e * S) : 1.0;
+    return;
+  }
+  const float bar = float(u.cfg3.z) * 0.01;
+  int folds = 0, counted = 0;
+  for (int b = -2; b <= 2; b += 2)
+    for (int a = -2; a <= 2; a += 2) {
+      ivec2 t = clamp(q + ivec2(a, b), ivec2(0), ivec2(LW - 1, LH - 1));
+      float v = plan[planOf(P_FCOST0, side, t.y * LW + t.x)];
+      counted += v >= 2.0 ? 1 : 0;
+      folds += v >= 2.0 + bar ? 1 : 0;
+    }
+  if (2 * folds > counted) plan[planOf(P_MASK, side, p)] = 0.0;
+}

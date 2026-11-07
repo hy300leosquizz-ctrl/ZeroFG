@@ -1,0 +1,34 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// df: the tiles the cleanup has to touch: a doubt is at most 4 pixels from what it changes, so those with a flag in their 3 x 3. pc.a = (W, H, 0: list, 1: the dispatch's arguments, one lane).
+#include "df_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  int tw = (pc.a.x + 15) / 16, th = (pc.a.y + 15) / 16;
+  if (pc.a.z == 1) {
+    if (gl_GlobalInvocationID != uvec3(0u)) return;
+    c_args = uvec4(c_count, 1u, 1u, 0u);
+    return;
+  }
+  // The append counter is already the indirect X count.
+  // Only this invocation writes Y/Z/W; never overwrite X with a vector store.
+  if ((DF_PRODUCT_OPTS & 1) != 0 && gl_GlobalInvocationID == uvec3(0u)) {
+    c_args.y = 1u;
+    c_args.z = 1u;
+    c_args.w = 0u;
+  }
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (q.x >= tw || q.y >= th) return;
+  uint any_flag = 0u;
+  for (int b = -1; b <= 1; ++b)
+    for (int a = -1; a <= 1; ++a) {
+      ivec2 t = clamp(q + ivec2(a, b), ivec2(0), ivec2(tw - 1, th - 1));
+      any_flag |= c_words[t.y * tw + t.x];
+    }
+  if (any_flag == 0u) return;
+  uint at;
+  if ((DF_PRODUCT_OPTS & 1) != 0) at = atomicAdd(c_args.x, 1u);
+  else at = atomicAdd(c_count, 1u);
+  c_words[uint(tw * th) + at] = uint(q.x) | (uint(q.y) << 16);
+}

@@ -1,0 +1,36 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The labels' seeds: a textured point with a clear winner takes it; everything else waits for the propagation. Also the best costs, sharp and soft. pc.a.x: the side, pc.a.y: 1 only the best costs, for the gates. The labels and their distances go to flip 1.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (q.x >= LW || q.y >= LH) return;
+  int side = pc.a.x, p = q.y * LW + q.x;
+  float c1 = 1e9, c2 = 1e9, low = -1.0;
+  int k1 = 0;
+  bool blind = false, any_cost = false;
+  float sharp_low = -1.0;
+  bool sharp_blind = false;
+  for (int k = 0; k < PLANES; ++k) {
+    float c = cost[costOf(1, side, k, p)];
+    float sc = cost[costOf(0, side, k, p)];
+    sharp_blind = sharp_blind || sc < 0.0;
+    sharp_low = sc >= 0.0 && (sharp_low < 0.0 || sc < sharp_low) ? sc : sharp_low;
+    bool seen = c >= 0.0, first = seen && c < c1, second = seen && !first && c < c2;
+    blind = blind || !seen;
+    any_cost = any_cost || seen;
+    c2 = first ? c1 : second ? c : c2;
+    c1 = first ? c : c1;
+    k1 = first ? k : k1;
+  }
+  low = any_cost ? c1 : -1.0;
+  plan[planOf(P_SOFT, side, p)] = low;
+  plan[planOf(P_BG, side, p)] = sharp_blind ? -1.0 : sharp_low;
+  if (pc.a.y != 0) return;
+  float wrong = stat[statOf(2, side, p)], textured = stat[statOf(1, side, p)], screen = plan[planOf(P_HUD, 0, p)];
+  bool seed = all(bvec4(screen <= 0.5, any_cost, !blind, textured >= u.th0.y)) && all(bvec3(low <= u.gate[2 + side], c1 < u.th0.z * wrong, c2 - c1 > u.th0.w * wrong));
+  label[labelOf(1, side, p)] = seed ? uint(k1) : 255u;
+  plan[planOf(P_DIST1, side, p)] = seed ? 0.0 : 1e9;
+}

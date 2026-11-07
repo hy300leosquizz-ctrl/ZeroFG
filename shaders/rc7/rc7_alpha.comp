@@ -1,0 +1,32 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The soft mattes of one picture, all at once: the front's, and each surface's, whose sample counts only where it is labelled so, is not the front or the screen, and explains the point. A 1-2-1 blur in one pass.
+// A point belongs to one matte at most, so its neighbours are read once however many mattes there are. Also which mattes are not empty at each point, so the guided filter reads only those. pc.a.x = side.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (q.x >= LW || q.y >= LH) return;
+  int side = pc.a.x, p = q.y * LW + q.x;
+  // In sixteenths, which sum to 16 at most: five bits per surface in one word, with no array and no branch.
+  uint front_sum = 0u, sums = 0u;
+  for (int b = -1; b <= 1; ++b)
+    for (int a = -1; a <= 1; ++a) {
+      ivec2 t = clamp(q + ivec2(a, b), ivec2(0), ivec2(LW - 1, LH - 1));
+      int m = t.y * LW + t.x, k = int(label[labelOf(0, side, m)]);
+      uint tap = uint(2 - abs(a)) * uint(2 - abs(b));
+      float mask = plan[planOf(P_MASK, side, m)], screen = plan[planOf(P_HUD, 0, m)], c = cost[costOf(0, side, min(k, 5), m)];
+      bool is_front = mask > 0.5, counts = all(bvec4(!is_front, k < PLANES, screen < 0.5, u.th1.w <= 0.0 || c <= u.th1.w * u.gate[side]));
+      front_sum += is_front ? tap : 0u;
+      sums += counts ? tap << (5u * uint(k)) : 0u;
+    }
+  plan[planOf(P_ALPHA, side, p)] = float(front_sum) / 16.0;
+  uint present = front_sum > 0u ? 1u : 0u;
+  for (int k = 0; k < PLANES; ++k) {
+    uint part = (sums >> (5u * uint(k))) & 31u;
+    palpha[alphaOf(side, k, p)] = float(part) / 16.0;
+    present |= part > 0u ? 2u << k : 0u;
+  }
+  plan[planOf(P_PRESENT, side, p)] = float(present);
+}

@@ -1,0 +1,16 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The pictures the decisions read when the Reals are large: half the size, each point the mean of 2 x 2, one bilinear fetch. The lattice's patches lie far apart, so every sample of the full picture is a trip to
+// memory; on this copy they stay in the cache. pc.a.x: the side.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  int side = THIS_SIDE;
+  ivec2 size = side == 0 ? imageSize(halfOutA) : imageSize(halfOutB);
+  if (q.x >= size.x || q.y >= size.y) return;
+  vec2 uv = (vec2(q) + 0.5) / vec2(size);
+  if (side == 0) imageStore(halfOutA, q, vec4(textureLod(realA, uv, 0.0).rgb, 1.0));
+  else imageStore(halfOutB, q, vec4(textureLod(realB, uv, 0.0).rgb, 1.0));
+}

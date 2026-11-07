@@ -1,0 +1,50 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// df: one pyramid level of both Reals, sampled at the even pixels of the finer level (the CPU form's convention: level pixel x is finer pixel 2x).
+// pc.c.x = 0: the 5-tap binomial from the finer level's buffer (the CPU form exactly); 1: the 3 x 3 binomial [1 2 1] from the finer level's TEXTURE in four
+// bilinear fetches (half-texel offsets), the cheap form; 2: the same four fetches from the Reals themselves (level 1 without a full-resolution luma
+// level: the luma is linear in rgb, so the luma of the filtered colour is the filtered luma).
+// pc.a = (w, h, out offset A, out offset B) of the new level, pc.b = (w, h, offset A, offset B) of the finer one. The descriptor set binds the finer
+// level's textures and this level's storage views.
+// DF_OPTS bit 0 also writes the legacy buffers; bit 1 builds B only,
+// retaining A from the previous pair without changing B's arithmetic or R16F store.
+#include "df_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  int x = int(gl_GlobalInvocationID.x), y = int(gl_GlobalInvocationID.y);
+  if (x >= pc.a.x || y >= pc.a.y) return;
+  float sa = 0.0, sb = 0.0;
+  const bool both = (DF_OPTS & 2) == 0;
+  if (pc.c.x != 0) {
+    const vec3 wts = 255.0 * vec3(0.299, 0.587, 0.114);
+    float fx = float(2 * x), fy = float(2 * y);
+    for (int j = 0; j < 2; ++j)
+      for (int i = 0; i < 2; ++i) {
+        float sx = fx - 0.5 + float(i), sy = fy - 0.5 + float(j);
+        if (pc.c.x == 2) {
+          if (both) sa += dot(real_bil(0, sx, sy), wts);
+          sb += dot(real_bil(1, sx, sy), wts);
+        } else {
+          if (both) sa += tex_bil(false, sx, sy);
+          sb += tex_bil(true, sx, sy);
+        }
+      }
+    if (both) sa *= 0.25;
+    sb *= 0.25;
+  } else {
+    const float k[5] = float[5](1.0 / 16.0, 4.0 / 16.0, 6.0 / 16.0, 4.0 / 16.0, 1.0 / 16.0);
+    for (int j = -2; j <= 2; ++j)
+      for (int i = -2; i <= 2; ++i) {
+        float wgt = k[i + 2] * k[j + 2];
+        if (both) sa += wgt * plane_at(pc.b.z, pc.b.x, pc.b.y, 2 * x + i, 2 * y + j);
+        sb += wgt * plane_at(pc.b.w, pc.b.x, pc.b.y, 2 * x + i, 2 * y + j);
+      }
+  }
+  if ((DF_OPTS & 1) != 0) {
+    if (both) pyr[pc.a.z + y * pc.a.x + x] = sa;
+    pyr[pc.a.w + y * pc.a.x + x] = sb;
+  }
+  if (both) imageStore(outA, ivec2(x, y), vec4(sa));
+  imageStore(outB, ivec2(x, y), vec4(sb));
+}

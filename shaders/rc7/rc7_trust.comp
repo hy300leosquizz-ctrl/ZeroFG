@@ -1,0 +1,42 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The judge: where the layer on top contradicts itself over a small region, against what a wrong match costs there, the base knows better. P_TRUST, softened by one blur in the same pass.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Near the front (its matte or the still surface, in either picture) the layers' cutout is better than the base's: there the bar is judge0.z.
+bool nearFront(ivec2 q) {
+  const int reach = max(1, 24 / S);
+  for (int b = -1; b <= 1; ++b)
+    for (int a = -1; a <= 1; ++a) {
+      ivec2 t = clamp(q + ivec2(a, b) * reach, ivec2(0), ivec2(LW - 1, LH - 1));
+      int m = t.y * LW + t.x;
+      for (int side = 0; side < 2; ++side)
+        if (plan[planOf(P_MASK, side, m)] > 0.5 || int(label[labelOf(0, side, m)]) == PLANES - 1) return true;
+    }
+  return false;
+}
+
+float raw_trust(ivec2 q) {
+  int r = max(2, 6 / S), p = q.y * LW + q.x;
+  if (plan[planOf(P_HUD, 0, p)] > 0.5) return 0.0;
+  float sum = 0.0, n = 0.0;
+  for (int b = -r; b <= r; b += 2)
+    for (int a = -r; a <= r; a += 2) {
+      ivec2 t = clamp((q + ivec2(a, b)) * S + S / 2, ivec2(0), ivec2(W - 1, H_ - 1));
+      float d = disagree[t.y * W + t.x];
+      if (d < 0.0) continue;
+      sum += min(d, 0.25);
+      n += 1.0;
+    }
+  if (n <= 0.0) return 0.0;
+  float ref_w = max(0.5 * (stat[statOf(2, 0, p)] + stat[statOf(2, 1, p)]), 0.012), lo = u.judge0.z > u.th3.x && nearFront(q) ? u.judge0.z : u.th3.x;
+  float t_v = clamp((sum / n / ref_w - lo) / lo, 0.0, 1.0);
+  return t_v * t_v * (3.0 - 2.0 * t_v);
+}
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (q.x >= LW || q.y >= LH) return;
+  plan[planOf(P_TRUST, 0, q.y * LW + q.x)] = raw_trust(q);
+}

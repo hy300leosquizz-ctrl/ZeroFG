@@ -1,0 +1,150 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+// HUD layer, before the engine (hud_common.glsl): one 16 x 16 tile per workgroup. Per pixel: a HUD in A or B, and whether the layer must
+// leave it to the engine (the HUD differs between A and B, or a Real is not what its planes explain), computed once for the tile and a
+// 2 px apron in shared memory; keep = a HUD pixel with nothing to leave within 2 px (5 x 5). Where kept, the picture without the HUD; the
+// Real elsewhere: A and B both. A tile with a kept pixel joins the list the compose pass is dispatched over, and is marked in `listed`.
+//
+// A tile far from any HUD is the Reals copied. When the pair starts at the Real the one before ended on, world_a is that pair's world_b
+// (reuse_a): it differs from the Real only in the tiles that pair marked, so only those are copied again and the rest is never touched.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0) uniform sampler2D real_a;
+layout(binding = 1) uniform sampler2D real_b;
+layout(binding = 2) uniform sampler2D p_a;
+layout(binding = 3) uniform sampler2D w_a;
+layout(binding = 4) uniform sampler2D p_b;
+layout(binding = 5) uniform sampler2D w_b;
+layout(rgb10_a2, binding = 6) uniform writeonly image2D world_a;
+layout(rgb10_a2, binding = 7) uniform writeonly image2D world_b;
+layout(r8, binding = 8) uniform writeonly image2D keep;
+layout(std430, binding = 9) buffer HudTiles {
+  uint args[3];  // the compose pass's indirect dispatch: x = the tiles listed, y = z = 1
+  uint tiles[];  // x | y << 16, in tiles
+};
+layout(std430, binding = 10) readonly buffer HudOccupancy {
+  uint occupied[];  // hud_occupancy.comp
+};
+layout(std430, binding = 11) readonly buffer HudListedBefore {
+  uint listed_before[];  // the pair before's `listed`, for world_a under reuse_a
+};
+layout(std430, binding = 12) writeonly buffer HudListed {
+  uint listed[];  // one per tile: 1 where this pair keeps a pixel (world_b differs from the Real)
+};
+
+#include "hud_common.glsl"
+
+const int kApron = 2;
+const int kSide = 16 + 2 * kApron;
+shared uint s_flags[kSide * kSide];  // bit 0: HUD (A or B), bit 1: leave, bit 2: HUD in A, bit 3: in B
+shared uint s_kept, s_near, s_copy_a;
+
+bool Inconsistent(vec3 c, vec3 p, vec3 q) {
+  float qm = (q.r + q.g + q.b) / 3.0;
+  if (qm < kQMin) {
+    return any(greaterThan(abs(c - p), vec3(kTol)));
+  }
+  if (qm >= 0.98) {
+    return false;
+  }
+  vec3 w = (c - p) / max(q, vec3(kQMin));
+  return any(lessThan(w, vec3(-kTol))) || any(greaterThan(w, vec3(1.0 + kTol)));
+}
+
+uint Flags(ivec2 p) {
+  vec3 pa = texelFetch(p_a, pc.p_a_origin + p, 0).rgb;
+  vec3 qa = Q(pa, texelFetch(w_a, pc.w_a_origin + p, 0).rgb);
+  vec3 pb = texelFetch(p_b, pc.p_b_origin + p, 0).rgb;
+  vec3 qb = Q(pb, texelFetch(w_b, pc.w_b_origin + p, 0).rgb);
+  const bool ha = (1.0 - (qa.r + qa.g + qa.b) / 3.0) > kHud, hb = (1.0 - (qb.r + qb.g + qb.b) / 3.0) > kHud;
+  bool hud = ha || hb;
+  if (!hud) {
+    return 0u;  // no HUD in either: nothing to leave either (the planes agree on nothing being there)
+  }
+  vec3 ca = texelFetch(real_a, pc.real_origin + p, 0).rgb;
+  vec3 cb = texelFetch(real_b, pc.real_origin + p, 0).rgb;
+  bool leave = any(greaterThan(abs(pa - pb), vec3(kChanged))) || any(greaterThan(abs(qa - qb), vec3(kChanged))) ||
+               Inconsistent(ca, pa, qa) || Inconsistent(cb, pb, qb);
+  return 1u | (leave ? 2u : 0u) | (ha ? 4u : 0u) | (hb ? 8u : 0u);
+}
+
+void main() {
+  ivec2 origin = ivec2(gl_WorkGroupID.xy) * 16;
+  uint li = gl_LocalInvocationIndex;
+  // A tile with no HUD near it (hud_occupancy.comp, this tile and its eight neighbours): the Reals as they are, the planes never read.
+  ivec2 tile_count = (pc.extent + 15) / 16;
+  ivec2 t = ivec2(gl_WorkGroupID.xy);
+  // One lane per word for the whole workgroup: every lane reading the nine occupancy words was most of the pass's cost on the Adreno.
+  const uint tile = uint(t.y * tile_count.x + t.x);
+  if (li == 0u) {
+    s_near = 0u;
+    s_kept = 0u;
+  }
+  barrier();
+  if (li < 9u) {
+    ivec2 n = t + ivec2(int(li) % 3 - 1, int(li) / 3 - 1);
+    if (all(greaterThanEqual(n, ivec2(0))) && all(lessThan(n, tile_count)) && occupied[n.y * tile_count.x + n.x] != 0u) {
+      atomicOr(s_near, 1u);
+    }
+  } else if (li == 9u) {
+    s_copy_a = (pc.reuse_a == 0 || listed_before[tile] != 0u) ? 1u : 0u;
+  }
+  barrier();
+  if (s_near == 0u) {
+    const bool copy_a = s_copy_a != 0u;
+    ivec2 p = origin + ivec2(gl_LocalInvocationID.xy);
+    if (all(lessThan(p, pc.extent))) {
+      if (copy_a) {
+        imageStore(world_a, p, texelFetch(real_a, pc.real_origin + p, 0));
+      }
+      imageStore(world_b, p, texelFetch(real_b, pc.real_origin + p, 0));
+      imageStore(keep, p, vec4(0.0));  // the code image is the engine's screen too (SetScreenTruth): defined everywhere
+    }
+    if (li == 0u) {
+      listed[tile] = 0u;
+    }
+    return;
+  }
+  for (uint i = li; i < uint(kSide * kSide); i += 256u) {
+    ivec2 q = clamp(origin + ivec2(int(i) % kSide, int(i) / kSide) - kApron, ivec2(0), pc.extent - 1);
+    s_flags[i] = Flags(q);
+  }
+  barrier();
+
+  ivec2 l = ivec2(gl_LocalInvocationID.xy);
+  ivec2 p = origin + l;
+  if (all(lessThan(p, pc.extent))) {
+    const bool hud = (s_flags[(l.y + kApron) * kSide + l.x + kApron] & 1u) != 0u;
+    bool k = hud;
+    for (int dy = -kApron; dy <= kApron && k; ++dy) {
+      for (int dx = -kApron; dx <= kApron; ++dx) {
+        if ((s_flags[(l.y + kApron + dy) * kSide + l.x + kApron + dx] & 2u) != 0u) {
+          k = false;
+          break;
+        }
+      }
+    }
+    vec4 ca = texelFetch(real_a, pc.real_origin + p, 0);
+    vec4 cb = texelFetch(real_b, pc.real_origin + p, 0);
+    if (k) {
+      vec3 pa = texelFetch(p_a, pc.p_a_origin + p, 0).rgb;
+      vec3 pb = texelFetch(p_b, pc.p_b_origin + p, 0).rgb;
+      ca.rgb = World(ca.rgb, pa, Q(pa, texelFetch(w_a, pc.w_a_origin + p, 0).rgb));
+      cb.rgb = World(cb.rgb, pb, Q(pb, texelFetch(w_b, pc.w_b_origin + p, 0).rgb));
+      atomicOr(s_kept, 1u);
+    }
+    imageStore(world_a, p, ca);
+    imageStore(world_b, p, cb);
+    // The code (hud_common.glsl, kCode*): HUD in A, in B, taken out and put back.
+    const uint centre = s_flags[(l.y + kApron) * kSide + l.x + kApron];
+    const uint code = ((centre & 4u) != 0u ? kCodeA : 0u) | ((centre & 8u) != 0u ? kCodeB : 0u) | (k ? kCodeKept : 0u);
+    imageStore(keep, p, vec4(float(code) / 255.0));
+  }
+  barrier();
+  if (li == 0u) {
+    listed[tile] = s_kept;
+    if (s_kept != 0u) {
+      tiles[atomicAdd(args[0], 1u)] = gl_WorkGroupID.x | (gl_WorkGroupID.y << 16);
+    }
+  }
+}

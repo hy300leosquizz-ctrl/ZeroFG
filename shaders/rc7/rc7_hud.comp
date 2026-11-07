@@ -1,0 +1,64 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The screen: what repeats in place and has texture, unless the motion around it explains it as well (a flat inside repeats under both, a letter only in place). Counts what repeats among what has
+// texture, for the host's rule that a scene mostly standing still has no overlay.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (q.x >= LW || q.y >= LH) return;
+  int p = q.y * LW + q.x;
+  plan[planOf(P_HUD, 0, p)] = 0.0;
+  float tx = stat[statOf(0, 0, p)];
+  if (tx < u.th0.x) return;
+  atomicAdd(counter[0], 1u);
+  vec2 pos = latCentre(q);
+  float mean = 0.0;
+  for (int b = -1; b <= 1; ++b)
+    for (int a = -1; a <= 1; ++a) {
+      vec2 t = pos + vec2(float(a), float(b)) * float(S);
+      mean += l1(sampleReal(0, t), sampleReal(1, t));
+    }
+  mean /= 9.0;
+  float here = l1(sampleReal(0, pos), sampleReal(1, pos));
+  // What a wrong match would cost on the sharp picture.
+  float d1 = max(1.0, 4.0 / float(S)) * float(S);
+  vec3 c = sampleReal(0, pos);
+  float wrong = 0.25 * (min(l1(c, sampleReal(0, pos + vec2(d1, 0.0))), 0.25) + min(l1(c, sampleReal(0, pos + vec2(0.0, d1))), 0.25) + min(l1(c, sampleReal(0, pos + vec2(d1, d1))), 0.25) + min(l1(c, sampleReal(0, pos + vec2(d1, -d1))), 0.25));
+  bool exact = mean < max(0.004, min(0.02, 0.2 * wrong)) || (here < 0.006 && tx >= 0.05);
+  // A HUD stays in place for hundreds of frames: what was the screen lately and still repeats in place, loosely, stays the screen, whatever runs behind it in this pair. P_HUD's second side holds the memory.
+  bool remembered = u.cfg3.w > 0 && plan[planOf(P_HUD, 1, p)] > 0.25 && here < 0.08;
+  if (!exact && !remembered && u.th4.x <= 0.0) return;
+  ivec2 cq = clamp(ivec2(pos / u.cell.xy), ivec2(0), ivec2(u.cfg2.x - 1, u.cfg2.y - 1));
+  vec2 v = cells[cq.y * u.cfg2.x + cq.x].zw;
+  float moved = -1.0;
+  if (length(v) >= 1.0) {
+    float sum = 0.0, n = 0.0;
+    for (int b = -1; b <= 1; ++b)
+      for (int a = -1; a <= 1; ++a) {
+        vec2 t = pos + vec2(float(a), float(b)) * float(S), t2 = t + v;
+        if (!insideM(t2)) continue;
+        sum += l1(sampleReal(0, t), sampleReal(1, t2));
+        n += 1.0;
+      }
+    if (n > 0.0) moved = sum / n;
+  }
+  // A translucent overlay: the background moves behind it, so it never repeats exactly, but it repeats in place better than it follows anything that moves. A flow that fails on a fast camera says
+  // nothing, so the surfaces have the last word; the still one, always last, is what this is being compared with.
+  bool translucent = u.th4.x > 0.0 && moved >= 0.0 && length(v) >= 2.0 && tx >= 0.02 && mean < u.th4.x * moved;
+  for (int k = 0; translucent && k < PLANES - 1; ++k) {
+    float c = cost[costOf(0, 0, k, p)];
+    if (c >= 0.0 && mean >= u.th4.x * c) translucent = false;
+  }
+  // What is remembered must still repeat in place better than it follows the motion or a surface: a background learned while the camera rested follows them as soon as the pan begins, and glued to the screen it comes out as A and B mixed in place.
+  if (remembered && moved >= 0.0 && moved <= mean) remembered = false;
+  for (int k = 0; remembered && k < PLANES - 1; ++k) {
+    float c = cost[costOf(0, 0, k, p)];
+    if (c >= 0.0 && c <= mean) remembered = false;
+  }
+  if (!exact && !translucent && !remembered) return;
+  if (!remembered && exact && u.th3.y > 0.5 && moved >= 0.0 && moved < max(0.012, 2.0 * mean)) return;
+  atomicAdd(counter[1], 1u);
+  plan[planOf(P_HUD, 0, p)] = 1.0;
+}

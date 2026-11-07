@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(zerofg VERSION 1.0.4 LANGUAGES CXX)
+project(zerofg VERSION 1.1.0 LANGUAGES CXX)
 
 # ZeroFG: a Vulkan frame generation engine. This builds the static library
 # `zerofg` (and the alias `zerofg::zerofg`).
@@ -10,7 +10,7 @@ project(zerofg VERSION 1.0.4 LANGUAGES CXX)
 #   - for the shaders, nothing more: a release ships them compiled
 #     (shaders/prebuilt). With Python 3, glslangValidator and spirv-opt (the
 #     Vulkan SDK: set VULKAN_SDK, or have both on PATH) they are compiled from
-#     shaders/rc3 instead. ZEROFG_PREBUILT_SHADERS picks one: AUTO (the
+#     shaders/ instead. ZEROFG_PREBUILT_SHADERS picks one: AUTO (the
 #     default: compile when the tools are there), ON, OFF.
 # Nothing links against a Vulkan loader: ZeroFG resolves every entry point
 # through the vkGetInstanceProcAddr the host passes in.
@@ -53,7 +53,7 @@ endif()
 if(_zerofg_prebuilt)
   message(STATUS "ZeroFG: shipped SPIR-V (shaders/prebuilt)")
 else()
-  message(STATUS "ZeroFG: shaders compiled from shaders/rc3")
+  message(STATUS "ZeroFG: shaders compiled from shaders/")
 endif()
 
 if(ZEROFG_VULKAN_HEADERS_DIR)
@@ -65,7 +65,6 @@ endif()
 
 set(_zerofg_shader_compiler
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/compile_vulkan13_shader.py")
-set(_zerofg_shader_source_dir "${CMAKE_CURRENT_SOURCE_DIR}/shaders/rc3")
 set(_zerofg_shader_prebuilt_dir "${CMAKE_CURRENT_SOURCE_DIR}/shaders/prebuilt/rc3")
 if(_zerofg_prebuilt)
   set(_zerofg_shader_output_dir "${_zerofg_shader_prebuilt_dir}")
@@ -74,7 +73,11 @@ else()
 endif()
 set(_zerofg_shader_headers)
 
-function(zerofg_compile_shader output_name source_name symbol)
+
+# Every shader is compiled from shaders/<subdir> with the include it shares with its engine; the compiled headers all go to one
+# directory (shaders/prebuilt/rc3 when shipped; the name is historical).
+function(zerofg_compile_shader_in subdir common output_name source_name symbol)
+  set(_dir "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${subdir}")
   set(_output "${_zerofg_shader_output_dir}/${output_name}.h")
   if(_zerofg_prebuilt)
     if(NOT EXISTS "${_output}")
@@ -88,36 +91,28 @@ function(zerofg_compile_shader output_name source_name symbol)
   add_custom_command(
     OUTPUT "${_output}"
     COMMAND "${Python3_EXECUTABLE}" "${_zerofg_shader_compiler}"
-            "${_zerofg_shader_source_dir}/${source_name}"
-            "${_output}" "${symbol}" ${ARGN}
-    DEPENDS "${_zerofg_shader_source_dir}/${source_name}"
-            "${_zerofg_shader_source_dir}/rc3_common.glsl"
-            "${_zerofg_shader_source_dir}/d4c_common.glsl"
-            "${_zerofg_shader_compiler}"
+            "${_dir}/${source_name}" "${_output}" "${symbol}" ${ARGN}
+    DEPENDS "${_dir}/${source_name}" "${_dir}/${common}" "${_zerofg_shader_compiler}"
     VERBATIM
     COMMENT "Compiling ZeroFG shader ${output_name} for Vulkan 1.3")
   set(_zerofg_shader_headers ${_zerofg_shader_headers} "${_output}"
       PARENT_SCOPE)
 endfunction()
 
-zerofg_compile_shader(rc3_crop crop.comp zerofg_rc3_crop_spv)
-zerofg_compile_shader(rc3_d0 d0_frontend.comp zerofg_rc3_d0_spv)
-zerofg_compile_shader(rc3_d0a d0a_lattice.comp zerofg_rc3_d0a_spv)
-zerofg_compile_shader(rc3_d0b d0b_luma_full.comp zerofg_rc3_d0b_spv)
-zerofg_compile_shader(rc3_d0p d0p_photo.comp zerofg_rc3_d0p_spv)
-zerofg_compile_shader(rc3_d1 d1_evidence.comp zerofg_rc3_d1_spv)
-zerofg_compile_shader(rc3_d2_h0 d2_refine.comp zerofg_rc3_d2_h0_spv
-                      -DZFG_H1_ENABLED=0)
-zerofg_compile_shader(rc3_d3 d3_cells.comp zerofg_rc3_d3_spv)
-zerofg_compile_shader(rc3_d4 d4_fine.comp zerofg_rc3_d4_spv)
-zerofg_compile_shader(rc3_d4sg d4_fine.comp zerofg_rc3_d4sg_spv
-                      -DZFG_SUBGROUP=1)
-zerofg_compile_shader(rc3_d4c d4c_camera.comp zerofg_rc3_d4c_spv)
-zerofg_compile_shader(rc3_d4cc d4c_cost.comp zerofg_rc3_d4cc_spv)
-zerofg_compile_shader(rc3_d4cp d4c_pick.comp zerofg_rc3_d4cp_spv)
-zerofg_compile_shader(rc3_d5a d5a_resolve.comp zerofg_rc3_d5a_spv)
-zerofg_compile_shader(rc3_d5ah d5a_resolve.comp zerofg_rc3_d5ah_spv
-                      -DZFG_HALF=1)
+zerofg_compile_shader_in(rc3 crop.comp rc3_crop crop.comp zerofg_rc3_crop_spv)
+foreach(_df down up patch_sg patch_wg patch_q dense clist cut)
+  zerofg_compile_shader_in(df df_common.glsl df_${_df} df_${_df}.comp zerofg_df_${_df}_spv)
+endforeach()
+zerofg_compile_shader_in(df df_common.glsl df_final df_final.comp zerofg_df_final_spv -DZFG_DF_IMAGE_OUT=1)
+zerofg_compile_shader_in(df df_common.glsl df_clean_t df_clean_t.comp zerofg_df_clean_t_spv -DZFG_DF_IMAGE_OUT=1)
+zerofg_compile_shader_in(df df_common.glsl df_patch_q8 df_patch_q.comp zerofg_df_patch_q8_spv -DZFG_DF_LANES=8)
+foreach(_rc7 half quarter flist soft stats hud hudrule hudgs cost seed jump raw block stand ghost morph hole front fsmooth unfold cons extend alpha render trust mix fine guide tile scell sstart slist shyp sfit srefit sinl secho sdone sorder sgate tblock tfit tguide out)
+  zerofg_compile_shader_in(rc7 rc7_common.glsl rc7_${_rc7} rc7_${_rc7}.comp zerofg_rc7_${_rc7}_spv -DZFG_RC7_CORE=1)
+endforeach()
+# The HUD layer (src/hud/hud_layer.cc), for hosts that give HUD planes: three self-contained passes around either engine.
+foreach(_hud occupancy prep compose)
+  zerofg_compile_shader_in(hud hud_common.glsl hud_${_hud} hud_${_hud}.comp zerofg_hud_${_hud}_spv)
+endforeach()
 
 if(NOT _zerofg_prebuilt)
   set_source_files_properties(${_zerofg_shader_headers} PROPERTIES GENERATED TRUE)
@@ -139,13 +134,15 @@ if(NOT _zerofg_prebuilt)
   add_custom_target(zerofg_check_prebuilt_shaders
     ${_zerofg_check_commands}
     DEPENDS ${_zerofg_shader_headers}
-    COMMENT "Checking ZeroFG's shipped SPIR-V against shaders/rc3"
+    COMMENT "Checking ZeroFG's shipped SPIR-V against the shader sources"
     VERBATIM)
 endif()
 
 add_library(zerofg STATIC
   src/zerofg.cc
-  src/rc3/rc3_context.cc
+  src/df/df_context.cc
+  src/rc7/rc7_context.cc
+  src/hud/hud_layer.cc
   ${_zerofg_shader_headers}
 )
 add_library(zerofg::zerofg ALIAS zerofg)

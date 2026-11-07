@@ -1,0 +1,30 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+// HUD layer, after the engine (hud_common.glsl): dispatched indirectly over the tiles hud_prep.comp listed, one 16 x 16 tile per
+// workgroup; on the kept pixels B's HUD goes back over the picture the engine made of the HUD-free Reals, in place:
+// out = P_B + Q_B * out. Where the HUD was left in, the engine interpolated it as always.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0) uniform sampler2D p_b;
+layout(binding = 1) uniform sampler2D w_b;
+layout(r8, binding = 2) uniform readonly image2D keep;
+layout(rgb10_a2, binding = 3) uniform image2D picture;
+layout(std430, binding = 4) readonly buffer HudTiles {
+  uint args[3];
+  uint tiles[];
+};
+
+#include "hud_common.glsl"
+
+void main() {
+  uint t = tiles[gl_WorkGroupID.x];
+  ivec2 p = ivec2(int(t & 0xffffu), int(t >> 16)) * 16 + ivec2(gl_LocalInvocationID.xy);
+  if (any(greaterThanEqual(p, pc.extent)) || (Code(imageLoad(keep, p).r) & kCodeKept) == 0u) {
+    return;
+  }
+  vec4 g = imageLoad(picture, p);
+  vec3 pb = texelFetch(p_b, pc.p_b_origin + p, 0).rgb;
+  vec3 qb = Q(pb, texelFetch(w_b, pc.w_b_origin + p, 0).rgb);
+  g.rgb = clamp(pb + qb * g.rgb, 0.0, 1.0);
+  imageStore(picture, p, g);
+}

@@ -1,0 +1,88 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// A model from the small picture is good to a few pixels. It is refined around what it predicts, on a picture twice as fine per level: every pair of cell and shift in its own lane, and the fit's rounds over the
+// cells that find themselves there. pc.a.x: 0 set the level (pc.a.y its pixels per point); 1 clear; 2 search; 3 each cell's answer and the sample; 4 keep the surface.
+#include "rc7_common.glsl"
+#include "rc7_search.glsl"
+#include "rc7_thumb.glsl"
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+const int NO_MATCH = 0x7fffffff;
+const int SIDE = 8;
+const int REACH = 4;
+
+void main() {
+  int mode = pc.a.x;
+  ivec3 g = ivec3(gl_GlobalInvocationID);
+  if (mode == 0) {
+    if (g != ivec3(0)) return;
+    bool on = t_on != 0 && t_accept != 0;
+    int level = t_step / max(1, pc.a.y), rw = W / max(1, level), rh = H_ / max(1, level), gw = rw / SIDE, gh = rh / SIDE;
+    if (gw < 4 || gh < 4 || gw * gh > 4480) on = false;
+    t_gstep = level;
+    t_gw = gw;
+    t_gh = gh;
+    t_ind_guide = on ? uvec4(2u, 2u, gw * gh, 0u) : uvec4(0u);
+    s_sample_n = on ? s_sample_n : 0;
+    return;
+  }
+  if (t_on == 0 || t_accept == 0) return;
+  int gw = t_gw, gh = t_gh, level = t_gstep;
+  vec2 scale = searchScale();
+  if (mode == 1) {
+    if (g.x >= gw || g.y >= gh) return;
+    int c = g.y * gw + g.x;
+    t_best[c] = NO_MATCH;
+    t_sum[c] = 0;
+    t_tried[c] = 0;
+    return;
+  }
+  if (mode == 2) {
+    int c = g.z, cx = c % gw, cy = c / gw;
+    if (gw * gh > 1000 && ((cx + cy) & 1) != 0) return;
+    int span = 2 * REACH + 1, shift = g.y * 16 + g.x;
+    if (shift >= span * span) return;
+    int dx = shift % span - REACH, dy = shift / span - REACH;
+    vec2 o = vec2(float(cx * SIDE * level), float(cy * SIDE * level));
+    vec2 centre = o + float(SIDE * level) * 0.5;
+    vec2 pred = (hApply(s_cur[0], s_cur[1], s_cur[2], centre * scale - 1.0) + 1.0) / scale;
+    vec2 p0 = floor(pred / float(level) - float(SIDE) * 0.5 + 0.5);
+    vec2 q0 = (p0 + vec2(float(dx), float(dy))) * float(level);
+    if (q0.x < 0.0 || q0.y < 0.0 || q0.x + float(SIDE * level) > float(W) || q0.y + float(SIDE * level) > float(H_)) return;
+    float sad = 0.0;
+    for (int j = 0; j < SIDE; j += 2)
+      for (int i = 0; i < SIDE; i += 2) {
+        vec2 t = vec2(float(i * level) + 0.5, float(j * level) + 0.5);
+        sad += abs(lumaOf(sampleReal(0, o + t)) - lumaOf(sampleReal(1, q0 + t)));
+      }
+    int id = (dy + REACH) * span + dx + REACH;
+    atomicMin(t_best[c], (int(sad * 512.0) << 13) | id);
+    atomicAdd(t_sum[c], int(sad * 64.0));
+    atomicAdd(t_tried[c], 1);
+    return;
+  }
+  if (mode == 3) {
+    // One lane: an even walk over the cells, as long as the sample.
+    if (g != ivec3(0)) return;
+    int total = gw * gh, stride = max(1, total / 512), got = 0, span = 2 * REACH + 1;
+    for (int c = 0; c < total && got < 256; c += stride) {
+      int best = t_best[c], tried = t_tried[c];
+      if (best == NO_MATCH || tried <= 0) continue;
+      float err = float(best >> 13) / 512.0, mean_err = float(t_sum[c]) / 64.0 / float(tried);
+      if (err >= 0.6 * mean_err) continue;
+      int cx = c % gw, cy = c / gw, id = best & 8191;
+      vec2 o = vec2(float(cx * SIDE * level), float(cy * SIDE * level)), centre = o + float(SIDE * level) * 0.5;
+      vec2 pred = (hApply(s_cur[0], s_cur[1], s_cur[2], centre * scale - 1.0) + 1.0) / scale;
+      vec2 p0 = floor(pred / float(level) - float(SIDE) * 0.5 + 0.5);
+      vec2 q0 = (p0 + vec2(float(id % span - REACH), float(id / span - REACH))) * float(level);
+      s_sample[got++] = vec4(centre * scale - 1.0, (q0 + float(SIDE * level) * 0.5) * scale - 1.0);
+    }
+    s_sample_n = got;
+    s_cur_plane = 0;
+    return;
+  }
+  if (g != ivec3(0)) return;
+  keepSurface(t_count * BLOCK * t_step * BLOCK * t_step);
+  t_accept = 0;
+  if (s_found >= 5) s_stop = 1;
+}

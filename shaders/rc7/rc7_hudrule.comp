@@ -1,0 +1,20 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// A scene that mostly repeats in place has no overlay: it stands still. When what repeats is a large part of what has texture, the screen layer goes away.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (q.x >= LW || q.y >= LH) return;
+  int p = q.y * LW + q.x;
+  if (float(counter[1]) > 0.3 * max(1.0, float(counter[0]))) {
+    plan[planOf(P_HUD, 0, p)] = 0.0;
+  } else if (u.cfg3.w > 0) {
+    // Only a scene that moves teaches the memory: when everything repeats in place, nothing says what is the screen.
+    plan[planOf(P_HUD, 1, p)] = mix(plan[planOf(P_HUD, 1, p)], plan[planOf(P_HUD, 0, p)], float(u.cfg3.w) * 0.01);
+  }
+  // pc.a.x == 1: the GS modes' screen (rc7_hudgs.comp, written beside the guess on the memory's side, unused while the memory is off) is
+  // the host's word, added after the rule: the rule never takes it back.
+  if (pc.a.x == 1) plan[planOf(P_HUD, 0, p)] = max(plan[planOf(P_HUD, 0, p)], plan[planOf(P_HUD, 1, p)]);
+}

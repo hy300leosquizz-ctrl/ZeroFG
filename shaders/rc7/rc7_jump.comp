@@ -1,0 +1,45 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// One round of the labels' propagation: each point reads the neighbours at a jump and keeps the shortest path of colour, Jacobi. pc.a = (side, jump, flip of the input), pc.b.x: 1 the last round, which also does what no path reached and what a label clearly does not explain.
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (q.x >= LW || q.y >= LH) return;
+  int side = THIS_SIDE, jump = pc.a.y, flip = pc.a.z, p = q.y * LW + q.x;
+  int dist_in = flip == 0 ? P_DIST0 : P_DIST1, dist_out = flip == 0 ? P_DIST1 : P_DIST0;
+  float best = plan[planOf(dist_in, side, p)];
+  uint lab = label[labelOf(flip, side, p)];
+  vec3 here = sampleSoft(side, latCentre(q));
+  const ivec2 dirs[8] = ivec2[8](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1), ivec2(1, 1), ivec2(-1, -1), ivec2(1, -1), ivec2(-1, 1));
+  for (int e = 0; e < 8; ++e) {
+    ivec2 t = q + dirs[e] * jump, inner = clamp(t, ivec2(0), ivec2(LW - 1, LH - 1));
+    int n = inner.y * LW + inner.x;
+    float d = plan[planOf(dist_in, side, n)];
+    vec3 g = abs(here - sampleSoft(side, latCentre(t)));
+    float through = d + float(jump) * (1.0 + 40.0 * (g.x + g.y + g.z));
+    uint theirs = label[labelOf(flip, side, n)];
+    bool take = all(bvec4(t.x == inner.x, t.y == inner.y, d < 1e9, through < best));
+    best = take ? through : best;
+    lab = take ? theirs : lab;
+  }
+  if (pc.b.x != 0) {
+    // What no path reached takes the first surface; a textured point its label clearly does not explain takes the surface that does.
+    if (lab == 255u) lab = 0u;
+    float low = plan[planOf(P_SOFT, side, p)];
+    bool hud_here = plan[planOf(P_HUD, 0, p)] > 0.5;
+    if (!hud_here && stat[statOf(1, side, p)] >= u.th0.y && low >= 0.0 && low <= u.gate[2 + side]) {
+      float now = cost[costOf(1, side, int(lab), p)];
+      if (now >= 0.0 && now > low + 2.0 * u.th0.w * stat[statOf(2, side, p)]) {
+        for (int k = 0; k < PLANES; ++k)
+          if (cost[costOf(1, side, k, p)] == low) {
+            lab = uint(k);
+            break;
+          }
+      }
+    }
+  }
+  plan[planOf(dist_out, side, p)] = best;
+  label[labelOf(1 - flip, side, p)] = lab;
+}

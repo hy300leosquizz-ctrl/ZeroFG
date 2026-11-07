@@ -1,0 +1,161 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// A whole fit in one dispatch: the best trial (pc.a.w = 1), then all its rounds, with nothing between them but this group's own barriers. In each round every sample adds what it says, weighted by how far it is from the
+// model (what does not follow stops pulling); each number of the sums has its own lane; one lane solves. pc.a.y: 1 stays affine (a model from coarse cells); pc.a.z: the rounds; pc.b.x: the tolerance, in hundredths of the
+// fine cells'. An affine motion splits into two 3 x 3 systems over the same matrix, 12 numbers; a plane needs the 8 x 8, 44. Each lane carries two samples, so the group's memory fits every device.
+#include "rc7_common.glsl"
+#include "rc7_search.glsl"
+layout(local_size_x = 128) in;
+
+shared vec4 lanes[128 * 11];
+shared float sums[44];
+shared vec4 cur[3];
+shared int cur_plane;
+shared int nothing;
+
+void addSample(vec4 t, vec2 scale, int round_i, bool plane, inout float v[44]) {
+  float w = 0.0;
+  vec2 r = (hApply(cur[0], cur[1], cur[2], t.xy) - t.zw) / scale;
+  float q = length(r) / ((round_i < 2 ? 12.0 : round_i < 4 ? 8.0 : 6.0) * float(pc.b.x) * 0.01);
+  if (q >= 1.0) return;
+  w = 1.0 - q * q;
+  w *= w;
+  if (!plane) {
+    float x = t.x, y = t.y, a = t.z, b = t.w;
+    v[0] += w * x * x;
+    v[1] += w * x * y;
+    v[2] += w * x;
+    v[3] += w * y * y;
+    v[4] += w * y;
+    v[5] += w;
+    v[6] += w * a * x;
+    v[7] += w * a * y;
+    v[8] += w * a;
+    v[9] += w * b * x;
+    v[10] += w * b * y;
+    v[11] += w * b;
+    return;
+  }
+  float ru[8] = float[8](t.x, t.y, 1.0, 0.0, 0.0, 0.0, -t.z * t.x, -t.z * t.y);
+  float rv[8] = float[8](0.0, 0.0, 0.0, t.x, t.y, 1.0, -t.w * t.x, -t.w * t.y);
+  int n = 0;
+  for (int a = 0; a < 8; ++a) {
+    for (int b = a; b < 8; ++b) v[n++] += w * (ru[a] * ru[b] + rv[a] * rv[b]);
+    v[n++] += w * (ru[a] * t.z + rv[a] * t.w);
+  }
+}
+
+void solve(bool plane) {
+  if (!plane) {
+    mat3 m = mat3(sums[0], sums[1], sums[2], sums[1], sums[3], sums[4], sums[2], sums[4], sums[5]);
+    float d = determinant(m);
+    if (abs(d) < 1e-6) return;
+    mat3 inv = inverse(m);
+    vec3 ru = inv * vec3(sums[6], sums[7], sums[8]), rv = inv * vec3(sums[9], sums[10], sums[11]);
+    cur[0] = vec4(ru, 0.0);
+    cur[1] = vec4(rv, 0.0);
+    cur[2] = vec4(0.0, 0.0, 1.0, 0.0);
+    return;
+  }
+  float m[72];
+  int n = 0;
+  for (int a = 0; a < 8; ++a) {
+    for (int b = a; b < 8; ++b) {
+      m[a * 9 + b] = sums[n];
+      m[b * 9 + a] = sums[n];
+      ++n;
+    }
+    m[a * 9 + 8] = sums[n++];
+  }
+  for (int c = 0; c < 8; ++c) {
+    int pivot = c;
+    for (int r = c + 1; r < 8; ++r)
+      if (abs(m[r * 9 + c]) > abs(m[pivot * 9 + c])) pivot = r;
+    if (abs(m[pivot * 9 + c]) < 1e-6) return;
+    if (pivot != c)
+      for (int j = c; j < 9; ++j) {
+        float t = m[c * 9 + j];
+        m[c * 9 + j] = m[pivot * 9 + j];
+        m[pivot * 9 + j] = t;
+      }
+    float d = 1.0 / m[c * 9 + c];
+    for (int r = 0; r < 8; ++r) {
+      if (r == c) continue;
+      float f = m[r * 9 + c] * d;
+      if (f == 0.0) continue;
+      for (int j = c; j < 9; ++j) m[r * 9 + j] -= f * m[c * 9 + j];
+    }
+  }
+  float h[8];
+  for (int k = 0; k < 8; ++k) h[k] = m[k * 9 + 8] / m[k * 9 + k];
+  cur[0] = vec4(h[0], h[1], h[2], 0.0);
+  cur[1] = vec4(h[3], h[4], h[5], 0.0);
+  cur[2] = vec4(h[6], h[7], 1.0, 0.0);
+}
+
+void main() {
+  if (s_stop != 0) return;
+  int me = int(gl_LocalInvocationIndex);
+  if (me == 0) {
+    nothing = 0;
+    if (pc.a.w != 0) {
+      int best = -1;
+      float best_score = -0.5;
+      for (int i = 0; i < HYP_AFFINE + HYP_PLANE; ++i) {
+        float score = s_hyp[i * 3 + 2].w;
+        if (score > best_score) {
+          best_score = score;
+          best = i;
+        }
+      }
+      if (best < 0) {
+        s_stop = 1;
+        nothing = 1;
+      } else {
+        s_cur[0] = s_hyp[best * 3];
+        s_cur[1] = s_hyp[best * 3 + 1];
+        s_cur[2] = vec4(s_hyp[best * 3 + 2].xyz, 0.0);
+        s_cur_plane = best >= HYP_AFFINE ? 1 : 0;
+      }
+    }
+    cur[0] = s_cur[0];
+    cur[1] = s_cur[1];
+    cur[2] = s_cur[2];
+    cur_plane = s_cur_plane;
+  }
+  memoryBarrierShared();
+  barrier();
+  if (nothing != 0) return;
+  int n = s_sample_n;
+  bool has_a = me < n, has_b = me + 128 < n;
+  vec4 ta = has_a ? s_sample[me] : vec4(0.0), tb = has_b ? s_sample[me + 128] : vec4(0.0);
+  vec2 scale = searchScale();
+  for (int round_i = 0; round_i < pc.a.z; ++round_i) {
+    bool plane = pc.a.y == 0 && (round_i >= 4 || cur_plane != 0);
+    int stored = plane ? 11 : 3;
+    float v[44];
+    for (int k = 0; k < stored * 4; ++k) v[k] = 0.0;
+    if (has_a) addSample(ta, scale, round_i, plane, v);
+    if (has_b) addSample(tb, scale, round_i, plane, v);
+    for (int k = 0; k < stored; ++k) lanes[me * 11 + k] = vec4(v[k * 4], v[k * 4 + 1], v[k * 4 + 2], v[k * 4 + 3]);
+    memoryBarrierShared();
+    barrier();
+    // Each number of the sums in its own lane: the round lasts as long as one number takes, not 44.
+    if (me < stored * 4) {
+      int k = me >> 2, c = me & 3;
+      float sum = 0.0;
+      for (int l = 0; l < 128; ++l) sum += lanes[l * 11 + k][c];
+      sums[me] = sum;
+    }
+    memoryBarrierShared();
+    barrier();
+    if (me == 0) solve(plane);
+    memoryBarrierShared();
+    barrier();
+  }
+  if (me == 0) {
+    s_cur[0] = cur[0];
+    s_cur[1] = cur[1];
+    s_cur[2] = cur[2];
+  }
+}

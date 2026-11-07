@@ -1,0 +1,26 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// How much each point stands out from the background around it: its colour against the blocks' mean (the end of a surface's failure that stands out is the object, the other end its ghost). pc.a = (side, block size).
+#include "rc7_common.glsl"
+layout(local_size_x = 8, local_size_y = 8) in;
+
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (q.x >= LW || q.y >= LH) return;
+  int side = THIS_SIDE, size = pc.a.y, p = q.y * LW + q.x;
+  int gw = (LW + size - 1) / size, gh = (LH + size - 1) / size;
+  vec2 g = clamp((vec2(q) + 0.5) / float(size) - 0.5, vec2(0.0), vec2(float(gw) - 1.001, float(gh) - 1.001));
+  ivec2 c = ivec2(g);
+  vec2 f = g - vec2(c);
+  vec4 s00 = blocks[side * gw * gh + c.y * gw + c.x], s10 = blocks[side * gw * gh + c.y * gw + c.x + 1];
+  vec4 s01 = blocks[side * gw * gh + (c.y + 1) * gw + c.x], s11 = blocks[side * gw * gh + (c.y + 1) * gw + c.x + 1];
+  float w00 = (1.0 - f.x) * (1.0 - f.y) * s00.w, w10 = f.x * (1.0 - f.y) * s10.w, w01 = (1.0 - f.x) * f.y * s01.w, w11 = f.x * f.y * s11.w, total = w00 + w10 + w01 + w11;
+  // No background anywhere around: everything here fails every surface, so this is the inside of an object, not something that fails to stand out.
+  vec3 mean = (w00 * s00.rgb + w10 * s10.rgb + w01 * s01.rgb + w11 * s11.rgb) / total;
+  float sum = 0.0;
+  const bool thin = (R_OPTS & 8192) != 0;
+  const int samples = thin ? 8 : 16;
+  for (int n = 0; n < samples; ++n) sum += l1(sampleReal(side, latCentre(q + IPATCH[thin ? THIN[n] : n])), mean);
+  float out_v = sum / float(samples);
+  plan[planOf(P_STAND, side, p)] = total > 0.0 ? out_v : 1.0;
+}

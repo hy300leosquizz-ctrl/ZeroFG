@@ -1,0 +1,113 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The small picture's blocks. pc.a.x: 0 decide whether to run (one lane); 1 the small picture; 2 every pair of block and shift in its own lane, every second shift; 3 around the best, the shifts in between;
+// 4 each block's vote: its best shift, trusted if clearly better than the mean, and whether a surface already explains it.
+#include "rc7_common.glsl"
+#include "rc7_search.glsl"
+#include "rc7_thumb.glsl"
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+const int NO_MATCH = 0x7fffffff;
+
+float sadAt(int bx, int by, int dx, int dy) {
+  int tw = t_tw, x0 = bx * BLOCK, y0 = by * BLOCK, side_off = tw * t_th;
+  float sad = 0.0;
+  for (int j = 0; j < BLOCK; ++j)
+    for (int i = 0; i < BLOCK; ++i) sad += abs(t_luma[(y0 + j) * tw + x0 + i] - t_luma[side_off + (y0 + dy + j) * tw + x0 + dx + i]);
+  return sad;
+}
+
+void note(int block, float sad, int dx, int dy, bool count) {
+  int id = (dy + t_reach) * (2 * t_reach + 1) + dx + t_reach;
+  atomicMin(t_best[block], (int(sad * 512.0) << 13) | id);
+  if (count) {
+    atomicAdd(t_sum[block], int(sad * 64.0));
+    atomicAdd(t_tried[block], 1);
+  }
+}
+
+void main() {
+  int mode = pc.a.x;
+  ivec3 g = ivec3(gl_GlobalInvocationID);
+  if (mode == 0) {
+    if (g != ivec3(0)) return;
+    int covered = 0;
+    for (int k = 0; k < s_found; ++k) covered += s_size[k];
+    int step_px = max(8, (max(W, H_) / 80) & ~1), tw = W / step_px, th = H_ / step_px, bw = tw / BLOCK, bh = th / BLOCK;
+    bool on = covered * 2 < W * H_ && s_found < 5 && bw >= 4 && bh >= 4;
+    t_on = on ? 1 : 0;
+    s_stop = on ? 0 : 1;
+    t_step = step_px;
+    t_tw = tw;
+    t_th = th;
+    t_bw = bw;
+    t_bh = bh;
+    t_reach = min(tw / 3, 40);
+    t_accept = 0;
+    t_trusted = 0;
+    t_unexplained = 0;
+    t_count = 0;
+    int shifts = (2 * t_reach) / COARSE + 1;
+    t_ind_block = on ? uvec4((shifts + 7) / 8, (shifts + 7) / 8, bw * bh, 0) : uvec4(0u);
+    t_ind_refine = on ? uvec4(1u, 1u, bw * bh, 0) : uvec4(0u);
+    t_ind_guide = uvec4(0u);
+    return;
+  }
+  if (t_on == 0) return;
+  int tw = t_tw, th = t_th, bw = t_bw, bh = t_bh, reach = t_reach, step_px = t_step;
+  if (mode == 1) {
+    if (g.x >= tw || g.y >= th) return;
+    vec2 c = (vec2(g.xy) + 0.5) * float(step_px);
+    float q = float(step_px) * 0.25, a = 0.0, b = 0.0;
+    for (int e = 0; e < 4; ++e) {
+      vec2 o = vec2(e % 2 == 0 ? -q : q, e < 2 ? -q : q);
+      a += lumaOf(sampleReal(0, c + o));
+      b += lumaOf(sampleReal(1, c + o));
+    }
+    t_luma[g.y * tw + g.x] = a * 0.25;
+    t_luma[tw * th + g.y * tw + g.x] = b * 0.25;
+    if (g.y * tw + g.x < bw * bh) {
+      t_best[g.y * tw + g.x] = NO_MATCH;
+      t_sum[g.y * tw + g.x] = 0;
+      t_tried[g.y * tw + g.x] = 0;
+    }
+    return;
+  }
+  int block = g.z, bx = block % bw, by = block / bw;
+  if (mode == 2) {
+    int dx = g.x * COARSE - reach, dy = g.y * COARSE - reach;
+    if (dx > reach || dy > reach) return;
+    int x0 = bx * BLOCK, y0 = by * BLOCK;
+    if (y0 + dy < 0 || y0 + dy + BLOCK > th || x0 + dx < 0 || x0 + dx + BLOCK > tw) return;
+    note(block, sadAt(bx, by, dx, dy), dx, dy, true);
+    return;
+  }
+  if (mode == 3) {
+    if (g.x >= 3 || g.y >= 3 || t_best[block] == NO_MATCH) return;
+    int span = 2 * reach + 1, id = t_best[block] & 8191;
+    int dx = id % span - reach + g.x - 1, dy = id / span - reach + g.y - 1;
+    int x0 = bx * BLOCK, y0 = by * BLOCK;
+    if (y0 + dy < 0 || y0 + dy + BLOCK > th || x0 + dx < 0 || x0 + dx + BLOCK > tw) return;
+    note(block, sadAt(bx, by, dx, dy), dx, dy, false);
+    return;
+  }
+  // The block's vote: dispatched over the blocks as a plane.
+  if (g.x >= bw || g.y >= bh) return;
+  block = g.y * bw + g.x;
+  int best = t_best[block], tried = t_tried[block];
+  t_cell[block] = vec4(0.0);
+  if (best == NO_MATCH || tried <= 0) return;
+  int span = 2 * reach + 1, id = best & 8191;
+  float err = float(best >> 13) / 512.0, mean_err = float(t_sum[block]) / 64.0 / float(tried);
+  if (err >= 0.5 * mean_err) return;
+  atomicAdd(t_trusted, 1);
+  vec2 v = vec2(float(id % span - reach), float(id / span - reach)) * float(step_px);
+  vec2 pos = (vec2(g.xy) + 0.5) * float(BLOCK * step_px), scale = searchScale(), n = pos * scale - 1.0;
+  float near_px = 1.5 * float(step_px);
+  for (int k = 0; k < s_found; ++k) {
+    vec2 d = (hApply(s_H[k * 3], s_H[k * 3 + 1], s_H[k * 3 + 2], n) + 1.0) / scale - pos - v;
+    if (dot(d, d) <= near_px * near_px) return;
+  }
+  atomicAdd(t_unexplained, 1);
+  t_cell[block] = vec4(v, 1.0, 0.0);
+}

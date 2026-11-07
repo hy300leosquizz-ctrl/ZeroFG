@@ -29,15 +29,22 @@ enum class Status {
   kVulkanError,
 };
 
-// The product modes. Both run the same engine and logical contract.
+// The two engines (ZeroFG 1.1; in 1.0 both names meant the RC3 engine, which
+// is gone).
 enum class Mode : uint8_t {
-  // Zero: a 20 px cell motion field verified at full resolution, with a
-  // temporal prior, a photometric model, a continuity guard and its own
-  // resolve. Stateful across pairs: see Image::sequence.
+  // Zero, the quality engine (RC7): the pair explained as layers (surfaces
+  // that move as a whole, the nearest moving object with its own matte, a
+  // screen layer for what holds still on the screen) over the dense-flow
+  // picture, which a judge takes back where the layers contradict
+  // themselves. Everything is found and composed on the GPU, in the host's
+  // command buffer.
   kZero = 0,
-  // ReallyZero: the economy tier of Zero, the same engine with two fine
-  // propagation passes instead of four.
-  kReallyZero,
+  // ReallyZero, the economy engine: a dense optical flow solved at half
+  // resolution, a midpoint synthesis and a cleanup where the flow doubts.
+  kReallyZero = 1,
+  // The same engines by their development names.
+  kRC7 = kZero,
+  kDenseFlow = kReallyZero,
 };
 
 // Algorithm and execution backend are independent axes: every backend
@@ -88,12 +95,12 @@ struct Image {
   ActiveRect active_rect;
 
   // Identity of the Real this image holds in the host's accepted order (any
-  // strictly increasing counter; 0 = unknown). ZeroFG keeps the previous
-  // pair's motion as a temporal prior and uses it only when the pair it is
-  // about to record starts at the Real the previous recorded pair ended on,
-  // i.e. when previous.sequence equals the current.sequence of a pair this
-  // Interpolator recorded. A gap, a reset, a changed geometry or an unknown
-  // (0) sequence simply start the prior from nothing.
+  // strictly increasing counter; 0 = unknown). ZeroFG reuses what it kept
+  // from the previous pair (the Real it prepared, the motion it starts from)
+  // only when the pair it is about to record starts at the Real the previous
+  // recorded pair ended on, i.e. when previous.sequence equals the
+  // current.sequence of a pair this Interpolator recorded. A gap, a reset, a
+  // changed geometry or an unknown (0) sequence simply start from nothing.
   uint64_t sequence = 0;
 };
 
@@ -153,11 +160,52 @@ class Interpolator {
                      float phase,
                      const Image& output);
 
+  // The HUD of one Real, as a host that sees the draws can give it (ARMSX2's
+  // ZeroGS, from the PS2's GS): every HUD draw drawn a second time,
+  // with the game's own blend, into a plane cleared to black (p) and one
+  // cleared to white (w). Every blend is out = P + under * Q, so p is what the
+  // HUD adds and w - p how much of the picture under it still shows (per
+  // channel). Both at the Real's size (their own active rects may place them
+  // anywhere in their images), sampled, colour 0..1.
+  struct HudPlanes {
+    Image p;
+    Image w;
+  };
+
+  // The same as above, with the HUD planes of both Reals. The HUD that is the
+  // same in both Reals and that both pairs of planes explain is taken out of
+  // the Reals, the engine runs once on them, and current's HUD is put back on
+  // exactly those pixels; anything else (a HUD that moves or changes, a pixel
+  // something was drawn over) is interpolated as always. A plane with no
+  // image, a Real that is not A2B10G10R10, or any plane that does not fit
+  // makes this exactly the call above: the HUD layer never fails a frame. The
+  // engine gets the HUD-free pictures with sequence 0. Zero also hears where
+  // the layer left a HUD that stays in place (digits changing on a panel) and
+  // adds it to its own screen, so it never moves pieces of it.
+  Status Interpolate(VkCommandBuffer command_buffer,
+                     uint32_t frame_context_index,
+                     const Image& previous,
+                     const Image& current,
+                     float phase,
+                     const Image& output,
+                     const HudPlanes& previous_hud,
+                     const HudPlanes& current_hud);
+
  private:
-  explicit Interpolator(
-      std::vector<std::unique_ptr<AlgorithmContext>> contexts);
+  Interpolator(
+      std::vector<std::unique_ptr<AlgorithmContext>> contexts,
+      uint32_t frame_context_count,
+      const CreateInfo& create_info);
 
   std::vector<std::unique_ptr<AlgorithmContext>> contexts_;
+  uint32_t frame_context_count_ = 0;
+  // The HUD layer: made on the first call that brings HUD planes, at the size
+  // and formats of the last Resize.
+  CreateInfo create_info_;
+  std::unique_ptr<class HudLayer> hud_;
+  bool hud_failed_ = false;
+  uint32_t width_ = 0, height_ = 0;
+  VkFormat input_format_ = VK_FORMAT_UNDEFINED, output_format_ = VK_FORMAT_UNDEFINED;
 };
 
 }  // namespace zerofg

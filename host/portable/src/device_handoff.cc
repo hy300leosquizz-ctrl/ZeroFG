@@ -1,4 +1,4 @@
-// Copyright 2026 ZeroFG authors. SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 ZeroFG authors. SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
 //
 // The Source -> device B handoff (host/presenter/zerofg_device_handoff.inc),
 // built as its own translation unit: a Xenia-based host includes it in its

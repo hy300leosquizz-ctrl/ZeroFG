@@ -1,4 +1,4 @@
-// Copyright 2026 ZeroFG authors. SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 ZeroFG authors. SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
 //
 // The device-level entry points the presenter and the handoff call, resolved by
 // VulkanDevice::Wrap through vkGetDeviceProcAddr. The plain form is Vulkan 1.0

@@ -1,4 +1,4 @@
-// Copyright 2026 ZeroFG authors. SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 ZeroFG authors. SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
 //
 // The portable host kit's stand-in for the parts of Xenia's VulkanPresenter
 // the ZeroFG presenter reads: the convention for the game frame the host hands

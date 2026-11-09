@@ -269,4 +269,4 @@ play on the Adreno 840:
 
 ## License
 
-Apache-2.0, like the rest of this repository.
+Apache-2.0 OR GPL-2.0-or-later, like the rest of this repository.

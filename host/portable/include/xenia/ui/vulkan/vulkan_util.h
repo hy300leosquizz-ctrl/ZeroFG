@@ -1,4 +1,4 @@
-// Copyright 2026 ZeroFG authors. SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 ZeroFG authors. SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
 //
 // The portable host kit's stand-in for the Vulkan helpers the presenter uses.
 #ifndef ZEROFG_PORTABLE_XENIA_UI_VULKAN_VULKAN_UTIL_H_

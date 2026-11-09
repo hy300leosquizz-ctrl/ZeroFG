@@ -1,4 +1,4 @@
-// Copyright 2026 ZeroFG authors. SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 ZeroFG authors. SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
 //
 // The portable host kit's stand-in for Xenia's Presenter. The ZeroFG presenter
 // only carries the output settings from the host's PaintConfigProvider to the

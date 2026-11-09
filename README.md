@@ -530,10 +530,19 @@ AI-generated analysis, designs, code and documentation are engineering inputs. F
 
 ## License
 
-Licensed under the **Apache License, Version 2.0** (`Apache-2.0`). See
-[`LICENSE`](LICENSE).
+Dual-licensed: you may use ZeroFG under the **Apache License, Version 2.0**
+([`LICENSE`](LICENSE)) or under the **GNU General Public License, version 2 or
+(at your option) any later version** ([`LICENSE-GPL-2.0`](LICENSE-GPL-2.0)), at
+your option (`SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later`).
 
-Three files keep Xenia's BSD 3-Clause license
+The GPL option lets ZeroFG go into hosts that are GPL-2.0-only, such as RPCS3
+and its ports, which cannot take Apache-2.0 code. Every other host can keep
+using it under Apache-2.0 exactly as before.
+
+Unless you state otherwise, a contribution you submit for inclusion in ZeroFG
+is dual-licensed the same way, with no additional terms or conditions.
+
+Three files keep Xenia's BSD 3-Clause license, which goes with either option
 ([`LICENSE-Xenia`](host/xendroid/LICENSE-Xenia)): in `host/xendroid/`,
 `vulkan_presenter_zerofg_device_context.inc` (adapted from Xenia's presenter)
 and `xendroid_glue/vulkan_presenter_zerofg_glue.cc` (an excerpt of it); and

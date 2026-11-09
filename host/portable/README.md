@@ -126,7 +126,7 @@ God of War II).
 
 ## License
 
-Apache-2.0, like the rest of this repository, with one exception that keeps Xenia's BSD 3-Clause
+Apache-2.0 OR GPL-2.0-or-later, like the rest of this repository, with one exception that keeps Xenia's BSD 3-Clause
 license ([`../xendroid/LICENSE-Xenia`](../xendroid/LICENSE-Xenia)):
 `include/xenia/base/frame_stats.h`, from XenDroid's Xenia source tree, written there by XenDroid's
 author and the ZeroFG authors. A build that ships the kit carries that notice with it.

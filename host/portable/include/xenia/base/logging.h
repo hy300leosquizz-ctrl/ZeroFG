@@ -1,4 +1,4 @@
-// Copyright 2026 ZeroFG authors. SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 ZeroFG authors. SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
 //
 // The portable host kit's stand-in for Xenia's logging: the XELOG macros
 // format with {fmt} and hand the line to the host's sink (zerofg_host/host.h).

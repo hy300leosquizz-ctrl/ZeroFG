@@ -29,4 +29,4 @@ Xenia's BSD 3-Clause license ([LICENSE-Xenia](LICENSE-Xenia)) for
 and `xendroid_glue/vulkan_presenter_zerofg_glue.cc`, an excerpt of it. The
 adrenotools patch changes libadrenotools, which keeps its BSD 2-Clause license;
 `xendroid_glue/guest-pacing.patch` changes Xenia files, which keep theirs. The
-rest is Apache-2.0, like the rest of this repository.
+rest is Apache-2.0 OR GPL-2.0-or-later, like the rest of this repository.

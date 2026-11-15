@@ -121,7 +121,13 @@ const int P_JFLAG = 14;   // the layer contradicts itself here: the judge asks
 const int P_JC1 = 15;     // what the base took
 const int P_JC2 = 16;     // what the dense picture took
 const int P_PRESENT = 17;  // which mattes are not empty here: bit 0 the front, bit 1 + k the surface k
-const int P_COUNT = 18;
+const int P_HUDMEM = 18;  // the screen by cells (O_HUDCELL): side 0 the cell's memory, side 1 this pair's cells whose pixels take the screen one by one
+const int P_COUNT = 19;
+
+// The screen by cells (R_OPTS bit 19, review 12.4): a remembered cell gives the screen only its pixels that are the same in both pictures,
+// within HUD_SAME (l1, the mean over rgb); what moves in the cell stays the layers'.
+const bool O_HUDCELL = (R_OPTS & 524288) != 0;
+const float HUD_SAME = 0.02;
 
 const int BEND_STEP = 4;  // lattice points per point of the coarse grid of the bends
 int ln() { return LW * LH; }

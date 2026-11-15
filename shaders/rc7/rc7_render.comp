@@ -32,6 +32,22 @@ vec3 sharpSample(int side, vec2 pos) {
   return clamp(c / n, vec3(0.0), vec3(1.0));
 }
 
+// The screen by cells, one pixel of a remembered cell: it is the screen's when it repeats in place, A and B the same here (HUD_SAME) or
+// clearly closer in place than where the cell's motion takes it (a letter's edge under a codec's noise); what follows the motion stays the
+// layers'. A pixel taken in place agrees with itself in A and B better than with the motion, so a background glued to the screen cannot
+// come out twice.
+bool screenPixel(ivec2 x, vec2 pos) {
+  vec3 a = texelFetch(cubicA, x, 0).rgb;
+  float in_place = l1(a, texelFetch(cubicB, x, 0).rgb);
+  if (in_place < HUD_SAME) return true;
+  if (in_place >= 0.12) return false;
+  ivec2 cq = clamp(ivec2(pos / u.cell.xy), ivec2(0), ivec2(u.cfg2.x - 1, u.cfg2.y - 1));
+  vec2 v = cells[cq.y * u.cfg2.x + cq.x].zw;
+  if (length(v) < 1.0) return false;
+  ivec2 there = clamp(x + ivec2(round(v)), ivec2(0), ivec2(W - 1, H_ - 1));
+  return 2.0 * in_place < l1(a, texelFetch(cubicB, there, 0).rgb);
+}
+
 int orderAt(int rank) { return rank < 4 ? u.order[rank] : u.order2[rank - 4]; }
 // What exists in the block of a place inside the picture.
 uint tileAt(vec2 at) {
@@ -166,6 +182,12 @@ void main() {
       if (min(wa, wb) > 0.2 * (wa + wb)) dis = l1(sampleSoft(0, fa), sampleSoft(1, fb));
     }
     float t_h = (here & 256u) != 0u ? planAt(P_HUD, 0, pos) : 0.0;
+    if (O_HUDCELL && (here & 256u) != 0u) {
+      // A remembered cell (review 12.4): its pixels that are the same in both pictures are the screen's, one by one; what moves in the cell
+      // stays the layers'. A cell remembered by mistake is harmless: a pixel the same in A and B shown in place is right.
+      float t_p = planAt(P_HUDMEM, 1, pos);
+      if (t_p > 0.01 && screenPixel(q, pos)) t_h = max(t_h, t_p);
+    }
     if (t_h > 0.01) {
 #ifdef ZFG_PHASE
       vec3 c3 = mix(sampleReal(0, pos), sampleReal(1, pos), PH_A);

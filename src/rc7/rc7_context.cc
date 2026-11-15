@@ -73,7 +73,7 @@ namespace {
 constexpr int kFineRounds = 1, kFrontRoundsBend = 1, kFrontRoundsSample = 2, kPeels = 3, kPatch = 3, kFloorGate = 30;
 constexpr uint32_t kFlowLevel = 1;   // the dense flow runs on half-size Reals, solved down to a quarter of the picture. Its picture is full size: what falls back to it must not turn soft from one pair to the next, and a flow from full-size Reals brings the shards on repeating bars back through the surfaces
 constexpr uint32_t kFieldSide = 64;  // the long side of the cell field
-constexpr int kPlans = 18;
+constexpr int kPlans = 19;  // P_COUNT of rc7_common.glsl
 constexpr VkDeviceSize kRefitOffset = 15376, kFollowOffset = 16528, kCutOffset = 16840;  // in the search's buffer: r_H, t_H, s_cut
 // When the base takes over, per cent of what a wrong match costs: soon in the background, where surfaces do not fit many depths and the two samples double up; late near the front, whose cutout is better from the layers.
 constexpr int kBaseBar = 80, kBaseBarFront = 80;
@@ -83,10 +83,16 @@ constexpr int kBaseBar = 80, kBaseBarFront = 80;
 constexpr bool kBaseFullSize = ZFG_RC7_BASE_FULL != 0;  // the base's picture at the Reals' size, its flow still from the half-size ones: sharper where it is used, about a millisecond more on the Adreno at 3x
 constexpr int kCutCorrelation = 300;  // per mille: under this co-located correlation of the softened pictures the pair is a cut and shows B whole
 constexpr int kHudMemory = 0;  // percent of each pair in the screen's memory: what was the screen lately and still repeats in place stays the screen
+// The screen by cells (review 12.4, R_OPTS bit 19): strokes and exact repeats teach a memory per cell (P_HUDMEM), and a remembered cell gives
+// the screen only its pixels that are the same in A and B; what moves in it stays the layers'. 0 is the screen of 1.1.
+#ifndef ZFG_HUD_CELLS
+#define ZFG_HUD_CELLS 1
+#endif
+constexpr int kHudCells = ZFG_HUD_CELLS;
 constexpr int kHoleReach = 96;  // pixels: a point with matte around it in all four directions within this goes back to the matte
 constexpr int kUnfoldBar = 70;  // hundredths of a pixel per pixel: a point where most around stretches more than this leaves the front's matte
 constexpr uint32_t kHalfFrom = 800;  // from this wide the decisions read a quarter-size copy of the Reals: their far-apart samples stay in the cache, and only the render walks the whole picture
-constexpr int P_DIST1 = 3, P_MASK = 4, P_TMP = 5, P_FCOST0 = 8, P_HUD = 11;
+constexpr int P_DIST1 = 3, P_MASK = 4, P_TMP = 5, P_FCOST0 = 8, P_HUD = 11, P_HUDMEM = 18;
 // Exact reuse and output delivery, qualified against the dense-disagreement reference.
 constexpr int kFuseOutput = 8, kReusePrepared = 16, kReusePyramid = 256, kReuseStats = 512;
 constexpr int kReuseOpts = kFuseOutput | kReusePrepared | kReusePyramid | kReuseStats;
@@ -660,7 +666,7 @@ class Rc7Context final : public AlgorithmContext {
 
   // What the passes know when they are built: blocks, behind, two passes, the screen's hole, guided mattes, the cubic filter, the front
   // always first, the groups from a list, the costs and the statistics over a checkerboard of the patch, the guided window at its radius' step.
-  int RenderOpts() const { return 1 | 2 | 4 | 8 | 16 | (cubic_sampler_ ? 32 : 0) | 64 | 256 | 512 | 1024 | 2048 | 4096 | 8192; }
+  int RenderOpts() const { return 1 | 2 | 4 | 8 | 16 | (cubic_sampler_ ? 32 : 0) | 64 | 256 | 512 | 1024 | 2048 | 4096 | 8192 | (kHudCells ? 524288 : 0); }
   bool Phased() const { return std::abs(phase_ - 0.5f) > 0.0001f; }
   uint32_t TilePipe() const { return Phased() ? uint32_t(kTilePh) : uint32_t(kTile); }
 
@@ -1057,6 +1063,8 @@ class Rc7Context final : public AlgorithmContext {
     if (!hud_memory_) {
       const VkDeviceSize points = VkDeviceSize(lw_) * lh_;
       dispatch_.cmd_fill_buffer(cmd_, plan_.buffer(), VkDeviceSize(P_HUD * 2 + 1) * points * 4, points * 4, 0);
+      // The cells' memory (kHudCells) starts empty too.
+      dispatch_.cmd_fill_buffer(cmd_, plan_.buffer(), VkDeviceSize(P_HUDMEM * 2) * points * 4, points * 4, 0);
       MemoryBarrier(VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
       hud_memory_ = true;
     }
@@ -1065,7 +1073,8 @@ class Rc7Context final : public AlgorithmContext {
     // cursor drawn with the character), the guess catches that. It packs into the steps already there: it goes along with the guess (it
     // reads only the host's code image) on the memory's side, and the rule adds it after its own decision; no step or barrier of its own.
     static_assert(kHudMemory == 0, "the host's screen is written on the screen's memory side: with the memory on it needs a plan of its own");
-    Lat(kHud);
+    // With the screen by cells, pc.a.x says which lattice point in four reads its cell's own pixels this pair.
+    Lat(kHud, kHudCells ? int(hud_turn_++ & 3u) : 0);
     if (screen_now_) Lat(kHudGs);
     Lat(kSeed, 0, 1);
     Lat(kSeed, 1, 1);
@@ -1288,6 +1297,7 @@ class Rc7Context final : public AlgorithmContext {
   std::unique_ptr<DenseFlowSource> dense_;
   OwnedImage soft_[2], half_[2], quarter_[2], base_, fallback_, tight_[2], guide_, bend_;
   bool hud_memory_ = false;  // the screen's memory is cleared once per size
+  uint32_t hud_turn_ = 0;    // kHudCells: which lattice point in four reads its cell's own pixels this pair
   Image screen_truth_{};     // SetScreenTruth: the host's screen, codes as in shaders/rc7/rc7_hudgs.comp
   bool screen_now_ = false;  // this record adds it to the guess
   OwnedBuffer params_, search_, cost_, label_, plan_, stat_, front_, palpha_, cells_, out_, disagree_, counter_, blocks_, tiles_, thumb_, flist_, snap_, dummy_;

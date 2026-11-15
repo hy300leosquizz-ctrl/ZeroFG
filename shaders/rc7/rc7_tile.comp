@@ -71,6 +71,7 @@ void main() {
 #endif
   if (side == 0) {
     float screen = plan[planOf(P_HUD, 0, p)];
+    if (O_HUDCELL) screen = max(screen, plan[planOf(P_HUDMEM, 1, p)]);  // a cell whose pixels take the screen one by one is the screen's block too
     if (screen > 0.0005) mark(pos, 256u);
     if (screen > 0.0) markPlace(pos, 2048u);
   }

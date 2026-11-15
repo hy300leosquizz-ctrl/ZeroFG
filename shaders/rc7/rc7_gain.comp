@@ -1,0 +1,88 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// The light between the Reals (review finding 2): B's per-channel gain to A's exposure, for the decisions only (u.gainB, which sampleReal
+// applies to B; the render composes from the true pictures). A light change moves every part of the picture alike, motion moves some parts
+// a lot and others not at all, so the gain is the median of the ratios of an 8 x 8 cut of the picture, and it counts only when half the
+// blocks agree with the median's luma within 6 % and some channel is more than 4 % off 1; else it is 1, exactly. The lab's estimator
+// (ZeroFG-DEV, ZTB_GAIN_MEASURE=40, 7142bd3), every 4th pixel each way.
+// pc.a.x == 0, one group per block: the block's channel sums, A and B, into counter[8 + 6 block ..] (float bits).
+// pc.a.x == 1, one group, a lane per block: the medians by rank (the element the sorted list has at n / 2, ties by block), the agreement,
+// and the gain into counter[4 .. 7], copied into the parameters before anything reads them.
+#include "rc7_common.glsl"
+layout(local_size_x = 64) in;
+
+shared vec3 part_a[64], part_b[64];
+shared vec4 ratio[64];  // r, g, b, luma
+shared bool valid[64];
+shared vec4 median_of;
+shared int valid_count, agree_count;
+
+void main() {
+  uint lane = gl_LocalInvocationID.x;
+  if (pc.a.x == 0) {
+    int block = int(gl_WorkGroupID.x), bx = block % 8, by = block / 8;
+    ivec2 lo = ivec2(bx * W / 8, by * H_ / 8), hi = ivec2((bx + 1) * W / 8, (by + 1) * H_ / 8);
+    ivec2 first = (lo + 3) / 4 * 4;
+    int cols = max(0, (hi.x - first.x + 3) / 4), rows = max(0, (hi.y - first.y + 3) / 4);
+    vec3 a = vec3(0.0), b = vec3(0.0);
+    for (int i = int(lane); i < cols * rows; i += 64) {
+      ivec2 x = first + 4 * ivec2(i % cols, i / cols);
+      a += texelFetch(cubicA, x, 0).rgb;
+      b += texelFetch(cubicB, x, 0).rgb;
+    }
+    part_a[lane] = a;
+    part_b[lane] = b;
+    barrier();
+    for (uint s = 32u; s > 0u; s >>= 1u) {
+      if (lane < s) {
+        part_a[lane] += part_a[lane + s];
+        part_b[lane] += part_b[lane + s];
+      }
+      barrier();
+    }
+    if (lane == 0u)
+      for (int c = 0; c < 3; ++c) {
+        counter[8 + 6 * block + c] = floatBitsToUint(part_a[0][c]);
+        counter[8 + 6 * block + 3 + c] = floatBitsToUint(part_b[0][c]);
+      }
+    return;
+  }
+  int k = int(lane);
+  vec3 a, b;
+  for (int c = 0; c < 3; ++c) {
+    a[c] = uintBitsToFloat(counter[8 + 6 * k + c]);
+    b[c] = uintBitsToFloat(counter[8 + 6 * k + 3 + c]);
+  }
+  float la = a.r + a.g + a.b, lb = b.r + b.g + b.b;
+  valid[k] = la >= 1.0 && lb >= 1.0;  // a black block says nothing about a gain
+  ratio[k] = vec4(a / max(b, vec3(1e-3)), la / max(lb, 1e-3));
+  if (lane == 0u) {
+    valid_count = 0;
+    agree_count = 0;
+  }
+  barrier();
+  if (valid[k]) atomicAdd(valid_count, 1);
+  barrier();
+  const int n = valid_count;
+  // The median by rank: a valid block whose value has n / 2 valid values before it (ties by block) is the element of the sorted list.
+  for (int c = 0; c < 4; ++c) {
+    if (!valid[k]) continue;
+    float v = ratio[k][c];
+    int rank = 0;
+    for (int j = 0; j < 64; ++j)
+      if (valid[j] && (ratio[j][c] < v || (ratio[j][c] == v && j < k))) ++rank;
+    if (rank == n / 2) median_of[c] = v;
+  }
+  barrier();
+  if (valid[k] && abs(ratio[k].w / median_of.w - 1.0) < 0.06) atomicAdd(agree_count, 1);
+  barrier();
+  if (lane != 0u) return;
+  vec3 gain = vec3(1.0);
+  if (n > 0) {
+    vec3 g = clamp(median_of.rgb, vec3(0.5), vec3(2.0));
+    bool off = any(greaterThan(abs(g - 1.0), vec3(0.04)));
+    if (off && agree_count * 100 >= n * 50) gain = g;
+  }
+  for (int c = 0; c < 3; ++c) counter[4 + c] = floatBitsToUint(gain[c]);
+  counter[7] = floatBitsToUint(1.0);
+}

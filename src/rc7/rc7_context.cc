@@ -36,6 +36,7 @@
 #include "rc7_quarter.h"
 #include "rc7_hud.h"
 #include "rc7_hudrule.h"
+#include "rc7_gain.h"
 #include "rc7_hudgs.h"
 #include "rc7_jump.h"
 #include "rc7_mix.h"
@@ -89,6 +90,14 @@ constexpr int kHudMemory = 0;  // percent of each pair in the screen's memory: w
 #define ZFG_HUD_CELLS 1
 #endif
 constexpr int kHudCells = ZFG_HUD_CELLS;
+// The light between the Reals (review finding 2): B's gain to A's exposure for the decisions, measured per pair (rc7_gain.comp). 0 is the
+// decisions of 1.1.
+#ifndef ZFG_LIGHT_GAIN
+#define ZFG_LIGHT_GAIN 1
+#endif
+constexpr int kLightGain = ZFG_LIGHT_GAIN;
+// counter_: the screen's two counts, two spare, the gain (4 .. 7), the 64 blocks' sums (8 + 6 k ..).
+constexpr VkDeviceSize kCounterBytes = (8 + 64 * 6) * 4;
 constexpr int kHoleReach = 96;  // pixels: a point with matte around it in all four directions within this goes back to the matte
 constexpr int kUnfoldBar = 70;  // hundredths of a pixel per pixel: a point where most around stretches more than this leaves the front's matte
 constexpr uint32_t kHalfFrom = 800;  // from this wide the decisions read a quarter-size copy of the Reals: their far-apart samples stay in the cache, and only the render walks the whole picture
@@ -144,6 +153,7 @@ struct Params {
   int32_t cfg3[4];
   int32_t order[4], order2[4];
   float H[18][4], Hi[18][4], Mid[18][4];
+  float gainB[4];  // rc7_common.glsl u.gainB: 1 here, rc7_gain.comp's answer copied over it on the GPU
 };
 
 struct Push {
@@ -156,7 +166,7 @@ struct Push {
 enum Pipe : uint32_t {
   kCrop, kHalf, kHalf1, kQuarter, kQuarter1, kFList, kSoft, kSoft1, kStats, kStats1, kHud, kHudRule, kCost, kCost1, kCost2, kCost3, kSeed, kJump, kJump1, kRaw, kBlockPass, kBlockPass1, kStand, kStand1, kGhost, kMorph, kFront, kFront1, kFSmooth, kFSmooth1, kUnfold, kUnfold1, kHole, kCons, kExtend, kAlpha,
   kRender, kRenderOne, kRenderOne5 = kRenderOne + 5, kTrust, kMix, kFine, kFine1, kGuide, kGuide1, kTile,
-  kSCell, kSStart, kSList, kSHyp, kSFit, kSRefit, kSInl, kSEcho, kSDone, kSOrder, kSGate, kTBlock, kTFit, kTGuide, kOut, kStatsSharp, kHudGs,
+  kSCell, kSStart, kSList, kSHyp, kSFit, kSRefit, kSInl, kSEcho, kSDone, kSOrder, kSGate, kTBlock, kTFit, kTGuide, kOut, kStatsSharp, kHudGs, kGain,
   // MFG: the phase forms of the passes that depend on the phase (R_OPTS bit 16), made on the first record off the middle.
   kTilePh, kRenderPh, kRenderOnePh, kRenderOnePh5 = kRenderOnePh + 5, kPipeCount
 };
@@ -402,6 +412,14 @@ class Rc7Context final : public AlgorithmContext {
     }
     MemoryBarrier(VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, kCompute, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_UNIFORM_READ_BIT);
     MemoryBarrier(kCompute, VK_ACCESS_2_SHADER_WRITE_BIT, kCompute, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+    if (kLightGain && !repeat) {
+      // The light between the Reals, before anything reads B through it: the 64 blocks' sums, the gain, into the parameters. Per pair: a
+      // repeat keeps the pair's parameters.
+      Run(kGain, 64, 1, 0);
+      Barrier();
+      Run(kGain, 1, 1, 1);
+      CopyToParams(16, offsetof(Params, gainB), 16, counter_.buffer());
+    }
 
     // The fused mix writes the target itself. The ordinary path prepares it later.
     VkImage target = write_direct ? output.image : fallback_.image();
@@ -506,7 +524,7 @@ class Rc7Context final : public AlgorithmContext {
         {&cells_, VkDeviceSize(fw_) * fh_ * 16, storage},
         {&out_, n * 4, storage},
         {&disagree_, n * 4, storage},
-        {&counter_, 16, storage | dst},
+        {&counter_, kCounterBytes, storage | dst | VK_BUFFER_USAGE_TRANSFER_SRC_BIT},  // the gain is copied from it into the parameters
         {&blocks_, VkDeviceSize(gw_) * gh_ * 2 * 16, storage},
         {&tiles_, VkDeviceSize(Groups(width_, 16)) * Groups(height_, 16) * 2 * 4, storage},
         {&thumb_, 256 + 24 * 16 + 4480 * (16 + 16) + 2 * 4 * VkDeviceSize(width_ / 8 + 2) * (height_ / 8 + 2), storage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT},
@@ -631,7 +649,7 @@ class Rc7Context final : public AlgorithmContext {
                           RC7_SPEC(kTrust, trust), RC7_SPEC(kMix, mix), RC7_SIDES(kFine, fine, 0), RC7_SIDES(kGuide, guide, 1), RC7_SPEC(kTile, tile), RC7_SPEC(kSCell, scell), RC7_SPEC(kSStart, sstart),
                           RC7_SPEC(kSList, slist), RC7_SPEC(kSHyp, shyp), RC7_SPEC(kSFit, sfit), RC7_SPEC(kSRefit, srefit), RC7_SPEC(kSInl, sinl), RC7_SPEC(kSEcho, secho),
                           RC7_SPEC(kSDone, sdone), RC7_SPEC(kSOrder, sorder), RC7_SPEC(kSGate, sgate), RC7_SPEC(kTBlock, tblock), RC7_SPEC(kTFit, tfit), RC7_SPEC(kTGuide, tguide), RC7_SPEC(kOut, out),
-                          {kStatsSharp, zerofg_rc7_stats_spv, sizeof(zerofg_rc7_stats_spv), 0, 1, -1}, RC7_SPEC(kHudGs, hudgs)};
+                          {kStatsSharp, zerofg_rc7_stats_spv, sizeof(zerofg_rc7_stats_spv), 0, 1, -1}, RC7_SPEC(kHudGs, hudgs), RC7_SPEC(kGain, gain)};
 #undef RC7_ONE
 #undef RC7_COST
 #undef RC7_SIDES
@@ -890,14 +908,15 @@ class Rc7Context final : public AlgorithmContext {
     p.judge0[2] = kBaseBarFront * 0.01f;
     std::copy(th4, th4 + 4, p.th4);
     std::copy(judge1, judge1 + 4, p.judge1);
+    std::fill(p.gainB, p.gainB + 4, 1.0f);
     cmd_update_buffer_(cmd_, params_.buffer(), 0, sizeof(Params), &p);
   }
 
-  void CopyToParams(VkDeviceSize from, VkDeviceSize to, VkDeviceSize bytes) {
+  void CopyToParams(VkDeviceSize from, VkDeviceSize to, VkDeviceSize bytes, VkBuffer source = VK_NULL_HANDLE) {
     MemoryBarrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                   VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
     VkBufferCopy region{from, to, bytes};
-    dispatch_.cmd_copy_buffer(cmd_, search_.buffer(), params_.buffer(), 1, &region);
+    dispatch_.cmd_copy_buffer(cmd_, source != VK_NULL_HANDLE ? source : search_.buffer(), params_.buffer(), 1, &region);
     MemoryBarrier(VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_UNIFORM_READ_BIT);
   }
 

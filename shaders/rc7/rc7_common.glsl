@@ -21,6 +21,7 @@ layout(std140, binding = 0) uniform Params {
   vec4 H[18];    // A to B per surface, 3 rows, normalised coordinates
   vec4 Hi[18];   // B to A
   vec4 Mid[18];  // middle to A (the square root's inverse)
+  vec4 gainB;    // B's per-channel gain to A's exposure (rc7_gain.comp), applied where the decisions read B (sampleReal); exactly 1 without a light change
 } u;
 
 layout(std430, binding = 1) buffer CostBuf { float cost[]; };      // [kind 0 sharp, 1 soft][side][surface][point]
@@ -144,7 +145,8 @@ int alphaOf(int side, int k, int p) { return (side * PLANES + k) * ln() + p; }
 
 vec2 latCentre(ivec2 q) { return (vec2(q) + 0.5) * float(S); }
 vec2 sizeF() { return vec2(float(W), float(H_)); }
-vec3 sampleReal(int side, vec2 pos) { return (side == 0 ? textureLod(realA, pos / sizeF(), 0.0) : textureLod(realB, pos / sizeF(), 0.0)).rgb; }
+// The decisions read B at A's exposure (u.gainB); the render composes from the true pictures (sharpSample, cubicA / cubicB).
+vec3 sampleReal(int side, vec2 pos) { return side == 0 ? textureLod(realA, pos / sizeF(), 0.0).rgb : textureLod(realB, pos / sizeF(), 0.0).rgb * u.gainB.rgb; }
 vec3 sampleSoft(int side, vec2 pos) { return (side == 0 ? textureLod(softA, pos / sizeF(), 0.0) : textureLod(softB, pos / sizeF(), 0.0)).rgb; }
 float l1(vec3 a, vec3 b) { vec3 d = abs(a - b); return (d.x + d.y + d.z) / 3.0; }
 

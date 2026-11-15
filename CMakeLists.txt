@@ -108,7 +108,7 @@ zerofg_compile_shader_in(df df_common.glsl df_final df_final.comp zerofg_df_fina
 zerofg_compile_shader_in(df df_common.glsl df_final_phase df_final.comp zerofg_df_final_phase_spv -DZFG_DF_IMAGE_OUT=1 -DZFG_PHASE=1)
 zerofg_compile_shader_in(df df_common.glsl df_clean_t df_clean_t.comp zerofg_df_clean_t_spv -DZFG_DF_IMAGE_OUT=1)
 zerofg_compile_shader_in(df df_common.glsl df_patch_q8 df_patch_q.comp zerofg_df_patch_q8_spv -DZFG_DF_LANES=8)
-foreach(_rc7 half quarter flist soft stats hud hudrule hudgs cost seed jump raw block stand ghost morph hole front fsmooth unfold cons extend alpha render trust mix fine guide tile scell sstart slist shyp sfit srefit sinl secho sdone sorder sgate tblock tfit tguide out)
+foreach(_rc7 half quarter flist soft stats hud hudrule hudgs gain cost seed jump raw block stand ghost morph hole front fsmooth unfold cons extend alpha render trust mix fine guide tile scell sstart slist shyp sfit srefit sinl secho sdone sorder sgate tblock tfit tguide out)
   zerofg_compile_shader_in(rc7 rc7_common.glsl rc7_${_rc7} rc7_${_rc7}.comp zerofg_rc7_${_rc7}_spv -DZFG_RC7_CORE=1)
 endforeach()
 foreach(_rc7 render tile)

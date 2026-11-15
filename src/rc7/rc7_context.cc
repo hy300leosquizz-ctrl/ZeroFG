@@ -1093,7 +1093,10 @@ class Rc7Context final : public AlgorithmContext {
     // reads only the host's code image) on the memory's side, and the rule adds it after its own decision; no step or barrier of its own.
     static_assert(kHudMemory == 0, "the host's screen is written on the screen's memory side: with the memory on it needs a plan of its own");
     // With the screen by cells, pc.a.x says which lattice point in four reads its cell's own pixels this pair.
-    Lat(kHud, kHudCells ? int(hud_turn_++ & 3u) : 0);
+#ifndef ZFG_HUD_LOOK
+#define ZFG_HUD_LOOK 1
+#endif
+    Lat(kHud, kHudCells ? (ZFG_HUD_LOOK ? int(hud_turn_++ & 15u) : 99) : 0);  // ZFG_HUD_LOOK=0 (cost probe): no lattice point reads its cell
     if (screen_now_) Lat(kHudGs);
     Lat(kSeed, 0, 1);
     Lat(kSeed, 1, 1);
@@ -1316,7 +1319,7 @@ class Rc7Context final : public AlgorithmContext {
   std::unique_ptr<DenseFlowSource> dense_;
   OwnedImage soft_[2], half_[2], quarter_[2], base_, fallback_, tight_[2], guide_, bend_;
   bool hud_memory_ = false;  // the screen's memory is cleared once per size
-  uint32_t hud_turn_ = 0;    // kHudCells: which lattice point in four reads its cell's own pixels this pair
+  uint32_t hud_turn_ = 0;    // kHudCells: which lattice point in sixteen reads its cell's own pixels this pair
   Image screen_truth_{};     // SetScreenTruth: the host's screen, codes as in shaders/rc7/rc7_hudgs.comp
   bool screen_now_ = false;  // this record adds it to the guess
   OwnedBuffer params_, search_, cost_, label_, plan_, stat_, front_, palpha_, cells_, out_, disagree_, counter_, blocks_, tiles_, thumb_, flist_, snap_, dummy_;

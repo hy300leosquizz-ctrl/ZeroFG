@@ -40,9 +40,10 @@ void main() {
   // screenPixel): what follows the motion stays the layers'. So it needs none of the tests above against a background glued to the screen,
   // which a cell where a thin HUD is a small part of a moving scene always fails.
   bool cell_memory = O_HUDCELL && plan[planOf(P_HUDMEM, 0, p)] > 0.25 && here < 0.08;
-  // The cell's own pixels are read on one lattice point in four per pair (O_HUDCELL; the memory adds the pairs up), or on every point
+  // The cell's own pixels are read on one lattice point in sixteen per pair (O_HUDCELL; the memory adds the pairs up; one in four cost
+  // 2.5 ms on the Adreno 840 over the 1536 x 1344 Katamari bars), or on every point
   // (layhudpx bit 1, the lab's whole-cell form).
-  bool look = (R_OPTS & 131072) != 0 || (O_HUDCELL && (q.x & 1) + 2 * (q.y & 1) == pc.a.x);
+  bool look = (R_OPTS & 131072) != 0 || (O_HUDCELL && (q.x & 3) + 4 * (q.y & 3) == pc.a.x);
   if (!exact && !remembered && !cell_memory && !look && u.th4.x <= 0.0) return;
   ivec2 cq = clamp(ivec2(pos / u.cell.xy), ivec2(0), ivec2(u.cfg2.x - 1, u.cfg2.y - 1));
   vec2 v = cells[cq.y * u.cfg2.x + cq.x].zw;

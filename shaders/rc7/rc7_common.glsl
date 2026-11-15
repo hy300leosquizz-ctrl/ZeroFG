@@ -81,6 +81,17 @@ layout(push_constant) uniform Push {
   vec4 p;
 } pc;
 
+// The phase form (MFG, compiled with ZFG_PHASE: the block marks and the render only): the picture at pc.p.x between A (0) and B (1) instead
+// of the middle. Every decision lives on the two Reals, so only the last passes change: how far each sample goes back along its motion
+// (PH_A from A, PH_B from B) and how the two weigh. Without it these are the middle's 0.5, the very source the product had.
+#ifdef ZFG_PHASE
+#define PH_A pc.p.x
+#define PH_B (1.0 - pc.p.x)
+#else
+#define PH_A 0.5
+#define PH_B 0.5
+#endif
+
 #define W u.dim.x
 #define H_ u.dim.y
 #define LW u.dim.z
@@ -144,7 +155,14 @@ vec2 surfaceGo(int side, int k, vec2 pos) {
 // From the middle to both pictures along a surface.
 void surfaceMid(int k, vec2 pos, out vec2 pa, out vec2 pb) {
   int t = k * 3;
+#ifdef ZFG_PHASE
+  // The point of A that is at pos at the phase, along the surface's straight path: a fixed point on H itself (H is smooth: two rounds). The
+  // middle's own map is the matrix square root, which follows the surface's path in its group; the two differ in the second order.
+  pa = pos - PH_A * (homo(u.H[t], u.H[t + 1], u.H[t + 2], pos) - pos);
+  pa = pos - PH_A * (homo(u.H[t], u.H[t + 1], u.H[t + 2], pa) - pa);
+#else
   pa = homo(u.Mid[t], u.Mid[t + 1], u.Mid[t + 2], pos);
+#endif
   pb = homo(u.H[t], u.H[t + 1], u.H[t + 2], pa);
 }
 bool insideP(vec2 q) { return all(bvec4(q.x >= 0.0, q.y >= 0.0, q.x < float(W), q.y < float(H_))); }

@@ -50,8 +50,8 @@ void oneSurface(int k, int pass_i, vec2 pos, int cover_plane, bool cover_a) {
   // The model's true middle, the surface's fine step on top of it: half of it from each side.
   vec2 a0 = ba, b0 = bb;
   for (int it = 0; it < R_BEND; ++it) {
-    ba = a0 - 0.5 * bendAt(0, k, ba);
-    bb = b0 - 0.5 * bendAt(1, k, bb);
+    ba = a0 - PH_A * bendAt(0, k, ba);
+    bb = b0 - PH_B * bendAt(1, k, bb);
   }
   bool in_a = insideP(ba), in_b = insideP(bb);
   float matte_a = matteAt(0, k, ba), matte_b = matteAt(1, k, bb);
@@ -79,6 +79,12 @@ void oneSurface(int k, int pass_i, vec2 pos, int cover_plane, bool cover_a) {
   // A sample that weighs 0 adds 0: every lane of the wave takes both.
   vec3 ca = sharpSample(0, ba), cb = sharpSample(1, bb);
   vec3 c3 = (wa * ca + wb * cb) / (wa + wb);
+#ifdef ZFG_PHASE
+  {  // the nearer Real weighs more in time; the test of the two samples below keeps the plain weights
+    float ua = wa * 2.0 * PH_B, ub = wb * 2.0 * PH_A;
+    c3 = (ua * ca + ub * cb) / (ua + ub);
+  }
+#endif
   bool first_on_top = !top_seen && claim >= 0.5;
   float differ = l1(sampleSoft(0, ba), sampleSoft(1, bb));
   dis_out = first_on_top && min(wa, wb) > 0.2 * (wa + wb) ? differ : dis_out;
@@ -107,8 +113,8 @@ void main() {
     float fra = 0.0, frb = 0.0;
     if (has_front) {
       for (int it = 0; it < R_FRONT; ++it) {
-        fa = pos - 0.5 * frontAt(0, fa);
-        fb = pos - 0.5 * frontAt(1, fb);
+        fa = pos - PH_A * frontAt(0, fa);
+        fb = pos - PH_B * frontAt(1, fb);
       }
       in_a = insideP(fa);
       in_b = insideP(fb);
@@ -150,12 +156,22 @@ void main() {
       if (wa > 0.0) ca = sharpSample(0, fa);
       if (wb > 0.0) cb = sharpSample(1, fb);
       front_c = (wa * ca + wb * cb) / (wa + wb);
+#ifdef ZFG_PHASE
+      {
+        float ua = wa * 2.0 * PH_B, ub = wb * 2.0 * PH_A;
+        front_c = (ua * ca + ub * cb) / (ua + ub);
+      }
+#endif
       dis = 0.0;
       if (min(wa, wb) > 0.2 * (wa + wb)) dis = l1(sampleSoft(0, fa), sampleSoft(1, fb));
     }
     float t_h = (here & 256u) != 0u ? planAt(P_HUD, 0, pos) : 0.0;
     if (t_h > 0.01) {
+#ifdef ZFG_PHASE
+      vec3 c3 = mix(sampleReal(0, pos), sampleReal(1, pos), PH_A);
+#else
       vec3 c3 = 0.5 * (sampleReal(0, pos) + sampleReal(1, pos));
+#endif
       colour += rem * t_h * c3;
       rem *= 1.0 - t_h;
     }

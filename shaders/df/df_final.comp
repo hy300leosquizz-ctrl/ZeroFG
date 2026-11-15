@@ -4,7 +4,8 @@
 // weighted by their forward-backward loop errors) fills where the splats are thin; elsewhere the normalised splat. Also the doubt indicator: the two
 // warps disagree in luma by more than pc.p.y, or neither side closes its loop within pc.p.z px.
 // pc.a = (W, H, 1 for A2B10G10R10, scale), pc.b = (finest w, h, flow offset dir 0, flow offset dir 1), pc.c = (luma offset A, luma offset B, splat
-// mode), DF_OPTS: bit 0 the tx form, bit 1 the sharp colour (real_sharp5), the rest below; pc.p = (sigma, disagreement threshold, loop threshold, 0).
+// mode), DF_OPTS: bit 0 the tx form, bit 1 the sharp colour (real_sharp5), the rest below; pc.p = (sigma, disagreement threshold, loop threshold, 0;
+// compiled with ZFG_PHASE, the phase form: the phase between A and B).
 // The tx form reads the flows and the Reals as textures (8 fetches instead of 40 buffer reads) and takes the disagreement from the luma of the two
 // colour samples, which is the bilinear luma the buffer form reads (the luma is linear in rgb).
 #define DF_REAL_SIZE(T) ivec2(pc.a.x, pc.a.y)
@@ -49,14 +50,28 @@ void main() {
     vec2 t0 = 0.25 * (full_flow_t(1, sc, px, py) - full_flow_t(0, sc, px, py));
     pa = vec2(px, py) + t0;
     pb = vec2(px, py) - t0;
+#ifdef ZFG_PHASE
+    // The phase form (MFG, this file compiled with ZFG_PHASE): the picture at pc.p.w between A (0) and B (1) instead of the middle. The two
+    // flows live on A and on B, so nothing is rescaled from a middle field: the motion of what is at this pixel at that time is the two flows
+    // read here, the nearer Real's weighing more (at 0.5 it is the middle's own (F01 - F10) / 2); A's sample lies t of it back, B's 1 - t on.
+    const float tph = pc.p.w;
+    const vec2 mo = (1.0 - tph) * full_flow_t(0, sc, px, py) - tph * full_flow_t(1, sc, px, py);
+    pa = vec2(px, py) - tph * mo;
+    pb = vec2(px, py) + (1.0 - tph) * mo;
+#endif
     vec2 fa = full_flow_t(0, sc, pa.x, pa.y);
     vec2 fb = full_flow_t(1, sc, pb.x, pb.y);
     if ((DF_OPTS & 64) != 0) {
       // bit 6, the agreement form: each side's sample must MOVE as the middle pixel claims (A to B by -2 t0). Where the claimed point is hidden
       // in A behind something that moves otherwise (a static head over a panning world), A's sample lands on the occluder, whose own loop
       // closes, so the loop test below trusts the wrong side; the occluder's flow does not agree with the claim, so this test rejects it.
+#ifdef ZFG_PHASE
+      ea = length(fa - mo);
+      eb = length(fb + mo);
+#else
       ea = length(fa + 2.0 * t0);
       eb = length(fb - 2.0 * t0);
+#endif
     } else {
       ea = length(fa + full_flow_t(1, sc, pa.x + fa.x, pa.y + fa.y));
       eb = length(fb + full_flow_t(0, sc, pb.x + fb.x, pb.y + fb.y));
@@ -144,6 +159,11 @@ void main() {
   float s2 = pc.p.x * pc.p.x;
   float e0 = (DF_OPTS & 8) != 0 ? min(ea, eb) : 0.0;  // bit 3: the loop errors relative to the better side (both loops open: not a 50/50 blend)
   float wa = exp(-(ea - e0) * (ea - e0) / s2) + 1e-3, wb = exp(-(eb - e0) * (eb - e0) / s2) + 1e-3;
+#ifdef ZFG_PHASE
+  // The nearer Real weighs more in time, on top of what each side's motion says (at 0.5: both by 1).
+  wa *= 2.0 * (1.0 - pc.p.w);
+  wb *= 2.0 * pc.p.w;
+#endif
   vec3 bw = (wa * ca + wb * cb) / (wa + wb);
   if ((DF_OPTS & 16) != 0) {  // bit 4: where the two colours disagree, one side only (the better loop; bit 5: B only when its loop is 0.5 px better)
     bool use_b = (DF_OPTS & 32) != 0 ? eb < ea - 0.5 : eb < ea;

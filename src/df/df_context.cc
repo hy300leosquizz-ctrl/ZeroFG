@@ -11,7 +11,9 @@
 //   final   the middle picture from the midpoint flow (the Reals through the clamped five-tap Catmull-Rom kernel), and the doubt indicator
 //   clean   the doubt density over 9 x 9 and the 5 x 5 blend where it rises, into the output
 //
-// The flow is solved down to half resolution. Optional starts retain last pair's flow; optional pyramid retention uses Image::sequence to identify the same Real. Phase 0.5 only.
+// The flow is solved down to half resolution. Optional starts retain last pair's flow; optional pyramid retention uses Image::sequence to identify the same Real. Any phase in (0, 1): the
+// middle is the product's own final pass, any other phase its phase form (MFG), and another phase of the pair just recorded records only the
+// picture (SetPairRepeat / SetPicturePhase).
 
 #include <algorithm>
 #include <array>
@@ -31,6 +33,7 @@
 #include "df_dense.h"
 #include "df_down.h"
 #include "df_final.h"
+#include "df_final_phase.h"
 #include "df_patch_q.h"
 #include "df_patch_q8.h"
 #include "df_patch_sg.h"
@@ -75,6 +78,7 @@ struct Pass {
   VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
   VkPipelineLayout layout = VK_NULL_HANDLE;
   VkPipeline pipeline = VK_NULL_HANDLE;
+  VkPipeline phase_pipeline = VK_NULL_HANDLE;  // the final pass only: its phase form (MFG), same layout and sets, made on first use
   VkDescriptorPool pool = VK_NULL_HANDLE;
   std::vector<VkDescriptorSet> sets;
   uint32_t stride = 0;  // the passes that bind the Reals or the output: this many sets per frame context, one copy for each
@@ -111,8 +115,18 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
     return Record(command_buffer, previous, current, nullptr);
   }
   Status RecordPicture(VkCommandBuffer command_buffer, const Image& previous, const Image& current, const Image& output) override {
-    return Interpolate(command_buffer, previous, current, 0.5f, output);
+    const float phase = picture_phase_;
+    const bool repeat = picture_repeat_;
+    picture_phase_ = 0.5f;
+    picture_repeat_ = false;
+    return InterpolateAt(command_buffer, previous, current, phase, output, repeat);
   }
+  void SetPicturePhase(float phase, bool repeat) override {
+    picture_phase_ = phase;
+    picture_repeat_ = repeat;
+  }
+  void ForgetStart() override { have_last_ = false; }
+  void SetPairRepeat(bool repeat) override { pair_repeat_ = repeat; }
   void SetPictureSize(uint32_t width, uint32_t height) override {
     picture_w_ = width;
     picture_h_ = height;
@@ -124,7 +138,15 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
       InvalidatePyramidCache();
       return Status::kInvalidArgument;
     }
-    return Record(command_buffer, previous, current, &output, &picture_previous, &picture_current);
+    const float phase = picture_phase_;
+    const bool repeat = picture_repeat_;
+    picture_phase_ = 0.5f;
+    picture_repeat_ = false;
+    if (!(phase > 0.0f && phase < 1.0f)) {
+      InvalidatePyramidCache();
+      return Status::kUnsupported;
+    }
+    return Record(command_buffer, previous, current, &output, &picture_previous, &picture_current, phase, repeat);
   }
 
   ~DfContext() override { DestroyWorking(); }
@@ -137,6 +159,8 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
 
   Status Resize(uint32_t width, uint32_t height, VkFormat input_format, VkFormat output_format) override {
     InvalidatePyramidCache();
+    flow_ready_ = false;
+    start_sequence_ = 0;
     if (width < 64 || height < 64 || width > 16384 || height > 16384) {
       return Status::kInvalidArgument;
     }
@@ -187,24 +211,33 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
 
   Status Interpolate(VkCommandBuffer command_buffer, const Image& previous, const Image& current, float phase,
                      const Image& output) override {
+    return InterpolateAt(command_buffer, previous, current, phase, output, pair_repeat_);
+  }
+
+  // Any phase strictly between the Reals; with `repeat`, another phase of the pair recorded last (only the picture is recorded).
+  Status InterpolateAt(VkCommandBuffer command_buffer, const Image& previous, const Image& current, float phase, const Image& output, bool repeat) {
     if (output.image == VK_NULL_HANDLE || output.view == VK_NULL_HANDLE || output.width != width_ || output.height != height_ ||
         output.format != output_format_ || output.layout == VK_IMAGE_LAYOUT_UNDEFINED || output.image == previous.image ||
         output.image == current.image || !std::isfinite(phase)) {
       InvalidatePyramidCache();
       return Status::kInvalidArgument;
     }
-    if (std::abs(phase - 0.5f) > 0.0001f) {
+    if (!(phase > 0.0f && phase < 1.0f)) {
       InvalidatePyramidCache();
       return Status::kUnsupported;
     }
-    return Record(command_buffer, previous, current, &output);
+    return Record(command_buffer, previous, current, &output, nullptr, nullptr, phase, repeat);
   }
 
-  // The frame, or with no output (RC6) only the flow.
-  Status Record(VkCommandBuffer command_buffer, const Image& previous, const Image& current, const Image* output_or_null, const Image* picture_a = nullptr, const Image* picture_b = nullptr) {
+  // The frame, or with no output (RC6) only the flow. `repeat`: the pair of the last record again, at another phase (MFG): its pyramid,
+  // flow and crops are kept and only the picture is recorded.
+  Status Record(VkCommandBuffer command_buffer, const Image& previous, const Image& current, const Image* output_or_null, const Image* picture_a = nullptr, const Image* picture_b = nullptr,
+                float phase = 0.5f, bool repeat = false) {
     const bool pyramid_was_valid = pyramid_valid_;
-    // No failed or partially recorded call may advertise a newly prepared B.
+    const bool flow_was_ready = flow_ready_;
+    // No failed or partially recorded call may advertise a newly prepared B, or a flow another phase could reuse.
     pyramid_valid_ = pyramid_reuse_ = false;
+    flow_ready_ = false;
     if (!initialized_ || command_buffer == VK_NULL_HANDLE || previous.image == VK_NULL_HANDLE ||
         previous.view == VK_NULL_HANDLE || current.image == VK_NULL_HANDLE || current.view == VK_NULL_HANDLE ||
         previous.width == 0 || previous.height == 0 || current.width != previous.width ||
@@ -232,13 +265,23 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
       return Status::kInvalidArgument;
     }
 
-    pyramid_reuse_ = retain_pyramid_ && pyramid_was_valid && previous.sequence != 0 && current.sequence != 0 &&
-                     previous.sequence == pyramid_identity_.sequence && previous.width == pyramid_identity_.width &&
-                     previous.height == pyramid_identity_.height && previous.format == pyramid_identity_.format &&
-                     rect.x == pyramid_identity_.rect.x && rect.y == pyramid_identity_.rect.y &&
-                     rect.width == pyramid_identity_.rect.width && rect.height == pyramid_identity_.rect.height;
-    pyramid_a_ = pyramid_reuse_ ? pyramid_b_ : 0u;
-    pyramid_b_ = 1u - pyramid_a_;
+    phase_ = phase;
+    if (output_or_null && Phased() && !EnsurePhasePipeline()) return Status::kVulkanError;
+    // Another phase of the pair just recorded keeps that record's pyramid banks, flow and crops.
+    repeat = repeat && flow_was_ready && output_or_null != nullptr;
+    if (!repeat) {
+      pyramid_reuse_ = retain_pyramid_ && pyramid_was_valid && previous.sequence != 0 && current.sequence != 0 &&
+                       previous.sequence == pyramid_identity_.sequence && previous.width == pyramid_identity_.width &&
+                       previous.height == pyramid_identity_.height && previous.format == pyramid_identity_.format &&
+                       rect.x == pyramid_identity_.rect.x && rect.y == pyramid_identity_.rect.y &&
+                       rect.width == pyramid_identity_.rect.width && rect.height == pyramid_identity_.rect.height;
+      pyramid_a_ = pyramid_reuse_ ? pyramid_b_ : 0u;
+      pyramid_b_ = 1u - pyramid_a_;
+      // The flow starts from last pair's answer only when this pair continues it (zerofg.h, Image::sequence): a pair whose A is known
+      // and is not the B of the last record starts from nothing. An unknown A (0: the HUD layer's pictures) keeps the start, a candidate
+      // that loses where it does not fit.
+      if (previous.sequence != 0 && start_sequence_ != 0 && previous.sequence != start_sequence_) have_last_ = false;
+    }
 
     // The record before may still be running: this one takes the next copy of the sets it writes.
     slot_ = (slot_ + 1) % frame_contexts_;
@@ -272,8 +315,10 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
                   VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                   VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    if (crop) RecordCrop(command_buffer, rect);
-    RecordFrame(command_buffer, output_or_null, write_direct);
+    if (crop && !repeat) RecordCrop(command_buffer, rect);
+    RecordFrame(command_buffer, output_or_null, write_direct, !repeat);
+    if (!repeat) start_sequence_ = current.sequence;
+    flow_ready_ = true;
     // A can be unknown on a miss (RC7 forwards 0 unless its full source-geometry
     // check certified continuity); a known, freshly prepared B still seeds the next call.
     if (retain_pyramid_ && current.sequence != 0) {
@@ -289,6 +334,9 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
   // RC6/RC7 consume flow_buffer() as FP32, so their source contexts must
   // neither omit that store nor skip a cleanup summary its shader expects.
   int ProductOpts() const { return product_ ? kProductOpts : 0; }
+  // The final pass's form: the texture form, the sharp colour, the compact words, the output written here and the cleanup only around doubts.
+  int FinalOpts() const { return 1 | 2 | 1024 | 2048 | (starts_ ? 64 : 0) | (product_ ? 4096 | 8192 : 0); }
+  bool Phased() const { return std::abs(phase_ - 0.5f) > 0.0001f; }
   void InvalidatePyramidCache() {
     pyramid_valid_ = pyramid_reuse_ = false;
     pyramid_a_ = 0;
@@ -416,6 +464,37 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
   }
 
   // ---- passes ------------------------------------------------------------------------------------------------------------------------------
+  bool CreatePipeline(VkPipelineLayout layout, const uint32_t* code, size_t bytes, int dir, int opts, VkPipeline* pipeline) {
+    VkShaderModuleCreateInfo smi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    smi.codeSize = bytes;
+    smi.pCode = code;
+    VkShaderModule module = VK_NULL_HANDLE;
+    if (dispatch_.create_shader_module(vulkan_.device, &smi, vulkan_.allocator, &module) != VK_SUCCESS) {
+      return false;
+    }
+    VkComputePipelineCreateInfo cpi{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    cpi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    cpi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    cpi.stage.module = module;
+    cpi.stage.pName = "main";
+    const int spec_values[3] = {dir, opts, ProductOpts()};
+    const VkSpecializationMapEntry spec_entries[3] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
+    const VkSpecializationInfo spec_info{3, spec_entries, sizeof(spec_values), spec_values};
+    cpi.stage.pSpecializationInfo = &spec_info;
+    cpi.layout = layout;
+    const VkResult result = dispatch_.create_compute_pipelines(vulkan_.device, VK_NULL_HANDLE, 1, &cpi, vulkan_.allocator, pipeline);
+    dispatch_.destroy_shader_module(vulkan_.device, module, vulkan_.allocator);
+    return result == VK_SUCCESS;
+  }
+
+  // The final pass's phase form (MFG; its own SPIR-V, compiled with ZFG_PHASE): made on the first record off the middle, so a session that
+  // stays at x2 builds nothing new.
+  bool EnsurePhasePipeline() {
+    Pass& final_pass = P(Stage::kFinal);
+    return final_pass.phase_pipeline != VK_NULL_HANDLE ||
+           CreatePipeline(final_pass.layout, zerofg_df_final_phase_spv, sizeof(zerofg_df_final_phase_spv), 0, FinalOpts(), &final_pass.phase_pipeline);
+  }
+
   bool MakePass(Pass* pass, const uint32_t* code, size_t bytes, const std::vector<VkDescriptorType>& bindings, uint32_t push_bytes,
                 uint32_t set_count, int dir = 0, int opts = 0) {
     std::vector<VkDescriptorSetLayoutBinding> layout_bindings;
@@ -442,27 +521,7 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
     if (dispatch_.create_pipeline_layout(vulkan_.device, &pl, vulkan_.allocator, &pass->layout) != VK_SUCCESS) {
       return false;
     }
-    VkShaderModuleCreateInfo smi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    smi.codeSize = bytes;
-    smi.pCode = code;
-    VkShaderModule module = VK_NULL_HANDLE;
-    if (dispatch_.create_shader_module(vulkan_.device, &smi, vulkan_.allocator, &module) != VK_SUCCESS) {
-      return false;
-    }
-    VkComputePipelineCreateInfo cpi{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    cpi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    cpi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    cpi.stage.module = module;
-    cpi.stage.pName = "main";
-    const int spec_values[3] = {dir, opts, ProductOpts()};
-    const VkSpecializationMapEntry spec_entries[3] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
-    const VkSpecializationInfo spec_info{3, spec_entries, sizeof(spec_values), spec_values};
-    cpi.stage.pSpecializationInfo = &spec_info;
-    cpi.layout = pass->layout;
-    const VkResult result =
-        dispatch_.create_compute_pipelines(vulkan_.device, VK_NULL_HANDLE, 1, &cpi, vulkan_.allocator, &pass->pipeline);
-    dispatch_.destroy_shader_module(vulkan_.device, module, vulkan_.allocator);
-    if (result != VK_SUCCESS) {
+    if (!CreatePipeline(pass->layout, code, bytes, dir, opts, &pass->pipeline)) {
       return false;
     }
     std::vector<VkDescriptorPoolSize> sizes;
@@ -511,7 +570,7 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
                                : use_subgroup_ ? sizeof(zerofg_df_patch_sg_spv) : sizeof(zerofg_df_patch_wg_spv);
     // Known when a pipeline is built: the direction (the eight-patch search and the densification, one pipeline each), the final pass's form (the texture form, the sharp colour, the compact words, the output written here
     // and the cleanup only around doubts), the densification's weight exponent, the listed cleanup.
-    const int final_opts = 1 | 2 | 1024 | 2048 | (starts_ ? 64 : 0) | (product_ ? 4096 | 8192 : 0);
+    const int final_opts = FinalOpts();
     const bool ok =
         MakePass(&passes_[uint32_t(Stage::kCrop)], zerofg_rc3_crop_spv, sizeof(zerofg_rc3_crop_spv), {kSampler, kImage}, 24, 2 * frame_contexts_) &&
         MakePass(&passes_[uint32_t(Stage::kDown)], zerofg_df_down_spv, sizeof(zerofg_df_down_spv), DfBindings(false), 64, sets * frame_contexts_) &&
@@ -651,7 +710,7 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
   void Dispatch(VkCommandBuffer cmd, Stage stage, uint32_t set, const void* push, uint32_t push_bytes, uint32_t gx, uint32_t gy,
                 uint32_t gz = 1) {
     Pass& pass = P(stage);
-    dispatch_.cmd_bind_pipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pass.pipeline);
+    dispatch_.cmd_bind_pipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, stage == Stage::kFinal && Phased() ? pass.phase_pipeline : pass.pipeline);
     dispatch_.cmd_bind_descriptor_sets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pass.layout, 0, 1, &pass.sets[set + pass.stride * slot_], 0, nullptr);
     if (push_bytes) dispatch_.cmd_push_constants(cmd, pass.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, push_bytes, push);
     dispatch_.cmd_dispatch(cmd, std::max(1u, gx), std::max(1u, gy), gz);
@@ -672,7 +731,14 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
     }
   }
 
-  void RecordFrame(VkCommandBuffer cmd, const Image* output_or_null, bool write_direct) {
+  // The flow unless this is another phase of the pair just recorded, then the picture (RC6: only the flow).
+  void RecordFrame(VkCommandBuffer cmd, const Image* output_or_null, bool write_direct, bool flow) {
+    if (flow) RecordFlowPart(cmd);
+    if (output_or_null) RecordPicturePart(cmd, *output_or_null, write_direct);
+  }
+
+  // The pyramid and the flow: once per pair.
+  void RecordFlowPart(VkCommandBuffer cmd) {
     const VkPipelineStageFlags2 kCompute = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     // Normally every internal image is rewritten. On a cache hit, A is the exact
     // former B and stays GENERAL; only the other pyramid bank is discarded.
@@ -739,8 +805,11 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
     }
 
     have_last_ = true;
-    if (!output_or_null) return;  // RC6: only the flow
-    const Image& output = *output_or_null;
+  }
+
+  // The picture at the record's phase from the pair's flow: once per generated frame.
+  void RecordPicturePart(VkCommandBuffer cmd, const Image& output, bool write_direct) {
+    const VkPipelineStageFlags2 kCompute = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     // The output (or the internal image that is blitted to it): the final pass writes it, the cleanup goes back over the tiles with a doubt within reach.
     VkImage target = write_direct ? output.image : fallback_output_.image();
     if (write_direct) {
@@ -778,7 +847,7 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
     fin.b[0] = int32_t(F.w); fin.b[1] = int32_t(F.h); fin.b[2] = F.flow0; fin.b[3] = F.flow1;
     fin.c[1] = kStillBar;
     fin.c[3] = 1 | 2;
-    fin.p[0] = kSigma; fin.p[1] = kDisagreement; fin.p[2] = product_ ? kLoopAt640 * float(width_) / 640.0f : kLoop * float(picture_scale); fin.p[3] = 1.0f;
+    fin.p[0] = kSigma; fin.p[1] = kDisagreement; fin.p[2] = product_ ? kLoopAt640 * float(width_) / 640.0f : kLoop * float(picture_scale); fin.p[3] = Phased() ? phase_ : 1.0f;
     Dispatch(cmd, Stage::kFinal, 0, &fin, sizeof(fin), Groups(PictureW(), 8), Groups(PictureH(), 8));
     ComputeBarrier(cmd);
 
@@ -830,6 +899,7 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
   void DestroyPass(Pass* pass) {
     if (pass->pool != VK_NULL_HANDLE) dispatch_.destroy_descriptor_pool(vulkan_.device, pass->pool, vulkan_.allocator);
     if (pass->pipeline != VK_NULL_HANDLE) dispatch_.destroy_pipeline(vulkan_.device, pass->pipeline, vulkan_.allocator);
+    if (pass->phase_pipeline != VK_NULL_HANDLE) dispatch_.destroy_pipeline(vulkan_.device, pass->phase_pipeline, vulkan_.allocator);
     if (pass->layout != VK_NULL_HANDLE) dispatch_.destroy_pipeline_layout(vulkan_.device, pass->layout, vulkan_.allocator);
     if (pass->set_layout != VK_NULL_HANDLE) {
       dispatch_.destroy_descriptor_set_layout(vulkan_.device, pass->set_layout, vulkan_.allocator);
@@ -861,6 +931,11 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
   uint32_t picture_w_ = 0, picture_h_ = 0;  // the picture's size when it is not the flow's Reals' size (RC7)
   bool product_ = false;       // RC5 itself: the flow's grid and the loop's limit follow the resolution
   bool have_last_ = false;     // the flow images hold last pair's answer
+  uint64_t start_sequence_ = 0;  // the B (Image::sequence) of the pair that answer is from; 0 unknown
+  bool flow_ready_ = false;    // the last record succeeded: its pyramid, flow and crops can serve another phase of its pair
+  float phase_ = 0.5f;         // the record's phase (MFG); the final pass's phase form away from 0.5
+  float picture_phase_ = 0.5f;  // SetPicturePhase, for the next RecordPicture / RecordPictureFrom
+  bool picture_repeat_ = false, pair_repeat_ = false;
   bool retain_pyramid_ = false;  // enabled explicitly by standalone RZ and the RC7 source owner
   struct PyramidIdentity {
     uint64_t sequence = 0;

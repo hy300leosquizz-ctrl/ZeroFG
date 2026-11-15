@@ -95,12 +95,16 @@ struct Image {
   ActiveRect active_rect;
 
   // Identity of the Real this image holds in the host's accepted order (any
-  // strictly increasing counter; 0 = unknown). ZeroFG reuses what it kept
-  // from the previous pair (the Real it prepared, the motion it starts from)
-  // only when the pair it is about to record starts at the Real the previous
-  // recorded pair ended on, i.e. when previous.sequence equals the
-  // current.sequence of a pair this Interpolator recorded. A gap, a reset, a
-  // changed geometry or an unknown (0) sequence simply start from nothing.
+  // strictly increasing counter; 0 = unknown). ZeroFG reuses the Real it
+  // prepared only when the pair it is about to record starts at the Real the
+  // previous recorded pair ended on, i.e. when previous.sequence equals the
+  // current.sequence of a pair this Interpolator recorded; a gap, a reset, a
+  // changed geometry or an unknown (0) sequence prepare it again. The motion
+  // it starts from is a candidate, never a reused result: a known gap (both
+  // sequences nonzero and not continuous) drops it, an unknown sequence keeps
+  // it as a candidate that loses where it does not fit. The same pair again
+  // (both sequences equal to the last call's) is another phase of it: see
+  // Interpolate.
   uint64_t sequence = 0;
 };
 
@@ -143,6 +147,14 @@ class Interpolator {
   //   0.0 = previous
   //   0.5 = midpoint (the ZeroFG 2x target)
   //   1.0 = current
+  // Any phase strictly between 0 and 1 (x3: 1/3, 2/3; x4: 0.25, 0.5, 0.75).
+  // A call with the pair of the last successful call (previous.sequence and
+  // current.sequence nonzero and equal to that call's, the same geometry)
+  // records only what depends on the phase: the per-pair work is that call's.
+  // Record the phases of a pair one after another on the same queue, before
+  // any other pair, each with its own frame_context_index (frame_context_count
+  // at least N + 1 for xN), and keep both Reals alive until the last one
+  // completes. With sequence 0 every call is a full record.
   //
   // previous/current must have VK_IMAGE_USAGE_SAMPLED_BIT.
   // output must be distinct. The chosen backend requires either storage-image
@@ -181,7 +193,8 @@ class Interpolator {
   // makes this exactly the call above: the HUD layer never fails a frame. The
   // engine gets the HUD-free pictures with sequence 0. Zero also hears where
   // the layer left a HUD that stays in place (digits changing on a panel) and
-  // adds it to its own screen, so it never moves pieces of it.
+  // adds it to its own screen, so it never moves pieces of it. The planes are
+  // used at the middle (0.5) only: any other phase is the call above.
   Status Interpolate(VkCommandBuffer command_buffer,
                      uint32_t frame_context_index,
                      const Image& previous,
@@ -206,6 +219,11 @@ class Interpolator {
   bool hud_failed_ = false;
   uint32_t width_ = 0, height_ = 0;
   VkFormat input_format_ = VK_FORMAT_UNDEFINED, output_format_ = VK_FORMAT_UNDEFINED;
+  // The pair of the last successful plain record (MFG: a call with the same pair records only the new phase).
+  static bool SameGeometry(const Image& a, const Image& b);
+  bool pair_valid_ = false;
+  uint64_t pair_previous_ = 0, pair_current_ = 0;
+  Image pair_geometry_[2];
 };
 
 }  // namespace zerofg

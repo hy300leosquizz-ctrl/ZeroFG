@@ -1,5 +1,6 @@
 #include "zerofg/zerofg.h"
 
+#include <cmath>
 #include <utility>
 
 #include "algorithm.h"
@@ -95,6 +96,7 @@ Status Interpolator::Resize(uint32_t width, uint32_t height,
   }
   width_ = width;
   height_ = height;
+  pair_valid_ = false;
   input_format_ = input_format;
   output_format_ = output_format;
   // The HUD layer follows the new size on its next use.
@@ -113,8 +115,28 @@ Status Interpolator::Interpolate(VkCommandBuffer command_buffer,
   if (frame_context_index >= frame_context_count_) {
     return Status::kInvalidArgument;
   }
-  return contexts_[contexts_.size() == 1 ? 0 : frame_context_index]->Interpolate(
-      command_buffer, previous, current, phase, output);
+  AlgorithmContext* const context = contexts_[contexts_.size() == 1 ? 0 : frame_context_index].get();
+  // The same pair as the last record (MFG: another phase of it): both sequences known and equal to that record's, the same geometry,
+  // and one context for every index (it holds the pair's work). The engine then records only what depends on the phase.
+  const bool repeat = contexts_.size() == 1 && pair_valid_ && previous.sequence != 0 && current.sequence != 0 &&
+                      previous.sequence == pair_previous_ && current.sequence == pair_current_ && SameGeometry(previous, pair_geometry_[0]) &&
+                      SameGeometry(current, pair_geometry_[1]);
+  context->SetPairRepeat(repeat);
+  const Status status = context->Interpolate(command_buffer, previous, current, phase, output);
+  context->SetPairRepeat(false);
+  pair_valid_ = status == Status::kSuccess;
+  if (pair_valid_) {
+    pair_previous_ = previous.sequence;
+    pair_current_ = current.sequence;
+    pair_geometry_[0] = previous;
+    pair_geometry_[1] = current;
+  }
+  return status;
+}
+
+bool Interpolator::SameGeometry(const Image& a, const Image& b) {
+  return a.width == b.width && a.height == b.height && a.format == b.format && a.active_rect.x == b.active_rect.x &&
+         a.active_rect.y == b.active_rect.y && a.active_rect.width == b.active_rect.width && a.active_rect.height == b.active_rect.height;
 }
 
 Status Interpolator::Interpolate(VkCommandBuffer command_buffer,
@@ -128,9 +150,11 @@ Status Interpolator::Interpolate(VkCommandBuffer command_buffer,
     return Status::kInvalidArgument;
   }
   AlgorithmContext* const context = contexts_[contexts_.size() == 1 ? 0 : frame_context_index].get();
-  const auto plain = [&]() { return context->Interpolate(command_buffer, previous, current, phase, output); };
+  const auto plain = [&]() { return Interpolate(command_buffer, frame_context_index, previous, current, phase, output); };
+  // The HUD layer is the middle's only (MFG version 1: every phase of a pair off the middle takes the plain path, so the phases of a pair
+  // never differ in path at x3 / x4; a host keeps the planes at x2).
   if (previous_hud.p.image == VK_NULL_HANDLE || previous_hud.w.image == VK_NULL_HANDLE || current_hud.p.image == VK_NULL_HANDLE ||
-      current_hud.w.image == VK_NULL_HANDLE || hud_failed_ || width_ == 0) {
+      current_hud.w.image == VK_NULL_HANDLE || hud_failed_ || width_ == 0 || std::abs(phase - 0.5f) > 0.0001f) {
     return plain();
   }
   if (!hud_) {
@@ -151,7 +175,10 @@ Status Interpolator::Interpolate(VkCommandBuffer command_buffer,
         return s;
       });
   // A plane that does not fit this pair: the pair without the layer (nothing was recorded for it).
-  return status == Status::kUnsupported ? plain() : status;
+  if (status == Status::kUnsupported) return plain();
+  // The engine's last record was on the layer's HUD-free pictures (sequence 0): no later call repeats it.
+  pair_valid_ = false;
+  return status;
 }
 
 }  // namespace zerofg

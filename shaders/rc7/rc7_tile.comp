@@ -56,10 +56,19 @@ void main() {
   int side = pc.a.y, p = q.y * LW + q.x;
   vec2 pos = latCentre(q);
   float front_alpha = plan[planOf(P_ALPHA, side, p)];
+#ifdef ZFG_PHASE
+  // How far towards the other picture the output lies from this one (the phase form: its phase from A, the rest from B).
+  float go = side == 0 ? PH_A : PH_B;
+  if (front_alpha > 0.0005) mark(pos + go * front[frontOf(0, side, p)], 1u);
+  if (front_alpha > 0.0) markPlace(pos, 512u << side);
+  for (int k = 0; k < PLANES; ++k)
+    if (palpha[alphaOf(side, k, p)] > 0.0005) mark(mix(pos, surfaceGo(side, k, pos), go), 2u << k);
+#else
   if (front_alpha > 0.0005) mark(pos + 0.5 * front[frontOf(0, side, p)], 1u);
   if (front_alpha > 0.0) markPlace(pos, 512u << side);
   for (int k = 0; k < PLANES; ++k)
     if (palpha[alphaOf(side, k, p)] > 0.0005) mark(0.5 * (pos + surfaceGo(side, k, pos)), 2u << k);
+#endif
   if (side == 0) {
     float screen = plan[planOf(P_HUD, 0, p)];
     if (screen > 0.0005) mark(pos, 256u);

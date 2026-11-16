@@ -118,7 +118,10 @@ Status Interpolator::Interpolate(VkCommandBuffer command_buffer,
   AlgorithmContext* const context = contexts_[contexts_.size() == 1 ? 0 : frame_context_index].get();
   // The same pair as the last record (MFG: another phase of it): both sequences known and equal to that record's, the same geometry,
   // and one context for every index (it holds the pair's work). The engine then records only what depends on the phase.
-  const bool repeat = contexts_.size() == 1 && pair_valid_ && previous.sequence != 0 && current.sequence != 0 &&
+  // x2 never repeats: two middles of one pair are a host recording the pair again (after a recording it did not submit, say), and that
+  // record must be whole, as it always was. Only another phase, or a middle after another phase, is a repeat.
+  const bool other_phase = std::abs(phase - 0.5f) > 0.0001f || std::abs(pair_phase_ - 0.5f) > 0.0001f;
+  const bool repeat = contexts_.size() == 1 && pair_valid_ && other_phase && previous.sequence != 0 && current.sequence != 0 &&
                       previous.sequence == pair_previous_ && current.sequence == pair_current_ && SameGeometry(previous, pair_geometry_[0]) &&
                       SameGeometry(current, pair_geometry_[1]);
   context->SetPairRepeat(repeat);
@@ -128,6 +131,7 @@ Status Interpolator::Interpolate(VkCommandBuffer command_buffer,
   if (pair_valid_) {
     pair_previous_ = previous.sequence;
     pair_current_ = current.sequence;
+    pair_phase_ = phase;
     pair_geometry_[0] = previous;
     pair_geometry_[1] = current;
   }

@@ -149,8 +149,10 @@ class Interpolator {
   //   1.0 = current
   // Any phase strictly between 0 and 1 (x3: 1/3, 2/3; x4: 0.25, 0.5, 0.75).
   // A call with the pair of the last successful call (previous.sequence and
-  // current.sequence nonzero and equal to that call's, the same geometry)
-  // records only what depends on the phase: the per-pair work is that call's.
+  // current.sequence nonzero and equal to that call's, the same geometry),
+  // when this call or that one is off the middle, records only what depends
+  // on the phase: the per-pair work is that call's. Two middles of one pair
+  // are two whole records, as at x2 always.
   // Record the phases of a pair one after another on the same queue, before
   // any other pair, each with its own frame_context_index (frame_context_count
   // at least N + 1 for xN), and keep both Reals alive until the last one
@@ -223,6 +225,7 @@ class Interpolator {
   static bool SameGeometry(const Image& a, const Image& b);
   bool pair_valid_ = false;
   uint64_t pair_previous_ = 0, pair_current_ = 0;
+  float pair_phase_ = 0.5f;
   Image pair_geometry_[2];
 };
 

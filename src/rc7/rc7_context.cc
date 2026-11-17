@@ -96,6 +96,13 @@ constexpr int kHudCells = ZFG_HUD_CELLS;
 #define ZFG_LIGHT_GAIN 1
 #endif
 constexpr int kLightGain = ZFG_LIGHT_GAIN;
+// The camera stopped (R_OPTS bit 21, rc7_srefit.comp mode 3; lab laystale=2, JUDGE_DESIGN_2026-11 §8): when a still picture holds most of
+// the pair's cells, the fallback surface holds still instead of carrying the last search's motion until the background search ends.
+// Arkham 1 -1.35 -> -0.49 dB against the base, Arkham 2 -1.65 -> -0.91, Katamari and the suites unchanged. 0 is the surfaces of 1.1.
+#ifndef ZFG_STOP_STILL
+#define ZFG_STOP_STILL 1
+#endif
+constexpr int kStopStill = ZFG_STOP_STILL;
 // counter_: the screen's two counts, two spare, the gain (4 .. 7), the 64 blocks' sums (8 + 6 k ..).
 constexpr VkDeviceSize kCounterBytes = (8 + 64 * 6) * 4;
 constexpr int kHoleReach = 96;  // pixels: a point with matte around it in all four directions within this goes back to the matte
@@ -684,7 +691,7 @@ class Rc7Context final : public AlgorithmContext {
 
   // What the passes know when they are built: blocks, behind, two passes, the screen's hole, guided mattes, the cubic filter, the front
   // always first, the groups from a list, the costs and the statistics over a checkerboard of the patch, the guided window at its radius' step.
-  int RenderOpts() const { return 1 | 2 | 4 | 8 | 16 | (cubic_sampler_ ? 32 : 0) | 64 | 256 | 512 | 1024 | 2048 | 4096 | 8192 | (kHudCells ? 524288 : 0); }
+  int RenderOpts() const { return 1 | 2 | 4 | 8 | 16 | (cubic_sampler_ ? 32 : 0) | 64 | 256 | 512 | 1024 | 2048 | 4096 | 8192 | (kHudCells ? 524288 : 0) | (kStopStill ? 2097152 : 0); }
   bool Phased() const { return std::abs(phase_ - 0.5f) > 0.0001f; }
   uint32_t TilePipe() const { return Phased() ? uint32_t(kTilePh) : uint32_t(kTile); }
 
@@ -981,6 +988,11 @@ class Rc7Context final : public AlgorithmContext {
     Run(kSRefit, cx, cy, 0);
     Barrier();
     Run(kSRefit, 1, 1, 1);
+    if (kStopStill) {
+      // The camera stopped: the fallback holds still when a still picture holds most cells (one lane, rc7_srefit.comp mode 3).
+      Barrier();
+      Run(kSRefit, 1, 1, 3);
+    }
     CopyToParams(kRefitOffset, offsetof(Params, H), 54 * 16);
     CopyInSearch(kRefitOffset, kFollowOffset);
     if (start) BuildSearch();

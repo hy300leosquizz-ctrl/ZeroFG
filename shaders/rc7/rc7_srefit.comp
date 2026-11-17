@@ -39,6 +39,13 @@ void main() {
         p_best = p;
       }
     }
+    // The camera stopped (R_OPTS bit 21, mode 3): the cells nearest to the still surface and the cells whose own flow is under half a pixel,
+    // in the still surface's own (otherwise unused) slots.
+    if ((R_OPTS & 2097152) != 0) {
+      if (k_best == moving) atomicAdd(r_sum[moving * 12 + 5], 1);
+      const vec2 own = cells[q.y * fw + q.x].xy;
+      if (dot(own, own) < 0.25) atomicAdd(r_sum[moving * 12 + 11], 1);
+    }
     if (k_best < 0 || k_best == moving) return;
     float x = p_best.x, y = p_best.y;
     vec2 r = to - p_best;
@@ -55,6 +62,42 @@ void main() {
     atomicAdd(r_sum[o + 9], int(r.y * x * FIX_R));
     atomicAdd(r_sum[o + 10], int(r.y * y * FIX_R));
     atomicAdd(r_sum[o + 11], int(r.y * FIX_R));
+    return;
+  }
+  if (mode == 3) {
+    // The camera stopped (R_OPTS bit 21; lab laystale=2, JUDGE_DESIGN_2026-11 §8), one lane after mode 1. When the surface nearest to over
+    // half of this pair's cells (and, if it is not the fallback, to over 1.5 times as many as the fallback: index 0, the biggest of the
+    // last search, where a point without evidence goes) is within a pixel (x the width over 640) of still at the picture's corners, and
+    // over half the cells' own flow is under half a pixel, the fallback holds still for the pair. Otherwise the last search's background,
+    // now a sliver (rain, a cape), carries its motion to every point without evidence until the background search ends: Arkham 1 lost
+    // 5-8.5 dB on the pairs after a pan stops. A slow pan is not a stop (God of War II), and only the fallback changes (swapping two moving
+    // surfaces turned their layer order over). The fallback counts among the candidates, so once still it stays still.
+    if (q.x != 0 || q.y != 0 || moving < 1) return;
+    const float cells_n = float(u.cfg2.x * u.cfg2.y), n0 = float(r_sum[5]);
+    int j = -1;
+    float nj = 0.0;
+    for (int k = 0; k <= moving && k < 6; ++k) {
+      const float nk = float(r_sum[k * 12 + 5]);
+      if (nk > nj) {
+        nj = nk;
+        j = k;
+      }
+    }
+    if (j < 0 || nj <= 0.5 * cells_n || (j != 0 && nj <= 1.5 * n0)) return;
+    if (float(r_sum[moving * 12 + 11]) <= 0.5 * cells_n) return;
+    const vec2 scale = searchScale();
+    float off = 0.0;
+    for (int c = 0; c < 4; ++c) {
+      const vec2 n = vec2((c & 1) != 0 ? 1.0 : -1.0, (c & 2) != 0 ? 1.0 : -1.0);
+      off = max(off, length((hApply(r_H[j * 3], r_H[j * 3 + 1], r_H[j * 3 + 2], n) - n) / scale));
+    }
+    if (off > max(1.0, float(W) / 640.0)) return;
+    for (int r = 0; r < 3; ++r) {
+      const vec4 e = vec4(r == 0 ? 1.0 : 0.0, r == 1 ? 1.0 : 0.0, r == 2 ? 1.0 : 0.0, 0.0);
+      r_H[r] = e;
+      r_Hi[r] = e;
+      r_Mid[r] = e;
+    }
     return;
   }
   int k = q.y * 8 + q.x, t = k * 3;

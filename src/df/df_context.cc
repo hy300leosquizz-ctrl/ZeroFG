@@ -52,6 +52,14 @@ constexpr float kSigma = 1.5f;                     // the loop-error weight of t
 constexpr float kDisagreement = 35.0f;             // luma (0..255) the two warps may disagree by before a pixel is doubtful
 constexpr float kLoop = 1.0f;                      // px the forward-backward loop may miss by
 constexpr float kCleanLow = 0.30f, kCleanHigh = 0.70f;  // the doubt density ramp of the blend
+// Zero's base (the dense source, not the product): its cleanup. In the lab (extclean=0, 2026-11-17) the quality was the same to two
+// decimals on five clips and the 840's Turnip spent 0.38 ms less per pair at a low clock, but only about 0.05 ms at the clock a game holds;
+// in the core the moving pairs of an Arkham slice lose 0.07 dB without it. Kept on (1, 1.1's base); 0 records neither the tile list nor the
+// cleanup.
+#ifndef ZFG_RC7_BASE_CLEAN
+#define ZFG_RC7_BASE_CLEAN 1
+#endif
+constexpr bool kBaseClean = ZFG_RC7_BASE_CLEAN != 0;
 // RC5 as a product. A character the camera follows stands still on a running world: the search also starts from standing still and from last pair's answer, on the finest level and three above it, when
 // that costs at most this share of the level's flow. The flow is solved on the first level no wider than kFlowMaxWidth, and the loop's limit is for 640 wide and follows the picture.
 constexpr int kStartLevels = 3;
@@ -819,8 +827,13 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
       ImageBarrier(cmd, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, kCompute,
                    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
     }
-    dispatch_.cmd_fill_buffer(cmd, clean_.buffer(), 0, 64 + VkDeviceSize(Groups(PictureW(), 16)) * Groups(PictureH(), 16) * 4, 0);
-    MemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, kCompute, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+    // The final pass writes every pixel; the cleanup then redoes the tiles with a doubt. Zero's base without it (kBaseClean) records neither
+    // the tile list nor the cleanup: the doubt marks the final pass still sets go nowhere.
+    const bool cleanup = product_ || kBaseClean;
+    if (cleanup) {
+      dispatch_.cmd_fill_buffer(cmd, clean_.buffer(), 0, 64 + VkDeviceSize(Groups(PictureW(), 16)) * Groups(PictureH(), 16) * 4, 0);
+      MemoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, kCompute, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+    }
     if (product_) {
       uint32_t level = uint32_t(levels_.size()) - 1;
       for (uint32_t k = 1; k < uint32_t(levels_.size()); ++k) {
@@ -853,18 +866,20 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
 
     Push tiles;
     tiles.a[0] = int32_t(PictureW()); tiles.a[1] = int32_t(PictureH());
-    Dispatch(cmd, Stage::kCList, 0, &tiles, sizeof(tiles), Groups(Groups(PictureW(), 16), 8), Groups(Groups(PictureH(), 16), 8));
-    if ((ProductOpts() & 1) == 0) {
+    if (cleanup) Dispatch(cmd, Stage::kCList, 0, &tiles, sizeof(tiles), Groups(Groups(PictureW(), 16), 8), Groups(Groups(PictureH(), 16), 8));
+    if (cleanup && (ProductOpts() & 1) == 0) {
       ComputeBarrier(cmd);
       tiles.a[2] = 1;
       Dispatch(cmd, Stage::kCList, 0, &tiles, sizeof(tiles), 1, 1);
     }
-    MemoryBarrier(cmd, kCompute, VK_ACCESS_2_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | kCompute,
-                  VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+    if (cleanup) {
+      MemoryBarrier(cmd, kCompute, VK_ACCESS_2_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | kCompute,
+                    VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+    }
     Push clean;
     clean.a[0] = int32_t(PictureW()); clean.a[1] = int32_t(PictureH()); clean.a[2] = 1;
     clean.p[0] = kCleanLow; clean.p[1] = kCleanHigh;
-    {
+    if (cleanup) {
       Pass& pass = P(Stage::kClean);
       dispatch_.cmd_bind_pipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pass.pipeline);
       dispatch_.cmd_bind_descriptor_sets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pass.layout, 0, 1, &pass.sets[pass.stride * slot_], 0, nullptr);

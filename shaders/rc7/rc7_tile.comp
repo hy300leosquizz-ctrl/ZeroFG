@@ -50,6 +50,20 @@ void main() {
         if (t.x >= 0 && t.y >= 0 && t.x < tw && t.y < th) bits |= tiles[t.y * tw + t.x];
       }
     tiles[tw * th + q.y * tw + q.x] = bits;
+    // The widened block already decides the class of its 8 x 8 groups (a group is a quarter of a block): reserve them here, without a
+    // second walk and the dependent step before it (lab laytilefuse=1, bit-identical: the render writes each pixel once whatever the order).
+    int gw = (W + 7) / 8, gh = (H_ + 7) / 8;
+    uint present = bits & 0x1ffu, surfaces = present & 0x7eu;
+    int c = 6;
+    if (present == surfaces && surfaces != 0u && (surfaces & (surfaces - 1u)) == 0u) c = findLSB(surfaces) - 1;
+    ivec2 first = q * 2;
+    int nx = min(2, gw - first.x), ny = min(2, gh - first.y);
+    uint at = atomicAdd(r_count[c], uint(nx * ny));
+    for (int y = 0; y < ny; ++y)
+      for (int x = 0; x < nx; ++x) {
+        ivec2 child = first + ivec2(x, y);
+        f_list[uint(2 * ln()) + uint(c * gw * gh) + at++] = uint(child.x) | (uint(child.y) << 16);
+      }
     return;
   }
   if (q.x >= LW || q.y >= LH) return;

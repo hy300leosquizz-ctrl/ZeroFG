@@ -1140,8 +1140,10 @@ class Rc7Context final : public AlgorithmContext {
     Run(kSGate, Groups(std::max(1u, lw_ / 2), 8), Groups(std::max(1u, lh_ / 2), 8), 1);
     Run(kSGate, Groups(std::max(1u, lw_ / 4), 8), Groups(std::max(1u, lh_ / 4), 8), 3, kCutLit);
     Barrier();
-    Lat(kMorph, 0, P_HUD, P_TMP, 2, 0);
+    // The gates' one-lane walk before the wide morph: dispatches with no barrier between them overlap on the 840 only when the narrow
+    // one is recorded first (lab round 11-12, bit-identical). Neither reads what the other writes.
     Run(kSGate, 1, 1, 2, kCutLit, kCutCost, kEasy, kFloorGate, kCutCorrelation);
+    Lat(kMorph, 0, P_HUD, P_TMP, 2, 0);
     CopyToParams(896, offsetof(Params, gate), 16);
     CopyToParams(kCutOffset, offsetof(Params, cfg3) + 4, 4);
     Barrier();
@@ -1282,8 +1284,6 @@ class Rc7Context final : public AlgorithmContext {
     Lat(tile, 1, 1);
     Barrier();
     Run(tile, tx, ty, 2);
-    Barrier();
-    Run(tile, Groups(Groups(width_, 8), 8), Groups(Groups(height_, 8), 8), 3);
     Barrier();
     Run(tile, 1, 1, 4);
     step_indirect_ = true;

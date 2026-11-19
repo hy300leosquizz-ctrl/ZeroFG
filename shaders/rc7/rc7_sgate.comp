@@ -57,6 +57,7 @@ void main() {
   if (q != ivec2(0)) return;
   float floor_gate = float(pc.b.x) * 0.001;
   vec4 gates = vec4(floor_gate);
+  float median_low = 1.0;  // the lowest of the four median costs: how well the best motion explains the pair
   for (int what = 0; what < 4; ++what) {
     uint total = 0u;
     for (int b = 0; b < BINS; ++b) total += s_hist[what * BINS + b];
@@ -66,6 +67,7 @@ void main() {
       seen += s_hist[what * BINS + b];
       if (seen > half_n) {
         float x = (float(b) + 0.5) / float(BINS);
+        median_low = min(median_low, 0.25 * x * x);
         gates[what] = max(floor_gate, 2.5 * 0.25 * x * x);
         break;
       }
@@ -84,5 +86,8 @@ void main() {
     float va2 = float(s_corr2[2]) / n2 - ma * ma, vb2 = float(s_corr2[3]) / n2 - mb * mb, cov2 = float(s_corr2[4]) / n2 - ma * mb;
     correlation = max(correlation, va2 * vb2 > 1.0 ? cov2 / sqrt(va2 * vb2) : (max(va2, vb2) > 16.0 ? 0.0 : 1.0));
   }
-  s_cut = correlation * 1000.0 < float(pc.b.y) ? 1 : 0;
+  // pc.a.z (kCutCost, thousandths, 2026-11-19, the false cuts): a cut also needs the motion search to have failed nearly everywhere (the
+  // median cost at least this). Fast motion over fine texture breaks the sparse correlation as a cut does, but the search still explains it
+  // (median 0.06-0.13 on Arkham); a cut leaves every cost at the top of the histogram (0.24).
+  s_cut = correlation * 1000.0 < float(pc.b.y) && median_low * 1000.0 >= float(pc.a.z) ? 1 : 0;
 }

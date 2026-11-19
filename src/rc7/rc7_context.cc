@@ -86,6 +86,9 @@ constexpr int kCutCorrelation = 300;  // per mille: under this co-located correl
 // 8-bit luma (owner 2026-11-19: a wipe interpolates): with a tenth of the sampled points lit in both pictures, a pair is a cut only if those do
 // not correlate either. A circle wipe broke the whole picture's correlation and showed B whole (Rayman: -2.49 dB on its transition).
 constexpr int kCutLit = 40;
+// Thousandths (2026-11-19, the false cuts): a cut also needs the lowest median search cost at least this. Fast Arkham motion broke the
+// correlation (0.06-0.10), real cuts leave every cost at the top (0.24). Lab laycutcost=160: cuts3 -0.33 -> -0.20 dB, synthetic cuts identical.
+constexpr int kCutCost = 160;
 constexpr int kHudMemory = 0;  // percent of each pair in the screen's memory: what was the screen lately and still repeats in place stays the screen
 // The screen by cells (review 12.4, R_OPTS bit 19): strokes and exact repeats teach a memory per cell (P_HUDMEM), and a remembered cell gives
 // the screen only its pixels that are the same in A and B; what moves in it stays the layers'. 0 is the screen of 1.1.
@@ -1134,7 +1137,7 @@ class Rc7Context final : public AlgorithmContext {
     Run(kSGate, Groups(std::max(1u, lw_ / 4), 8), Groups(std::max(1u, lh_ / 4), 8), 3, kCutLit);
     Barrier();
     Lat(kMorph, 0, P_HUD, P_TMP, 2, 0);
-    Run(kSGate, 1, 1, 2, kCutLit, 0, 0, kFloorGate, kCutCorrelation);
+    Run(kSGate, 1, 1, 2, kCutLit, kCutCost, 0, kFloorGate, kCutCorrelation);
     CopyToParams(896, offsetof(Params, gate), 16);
     CopyToParams(kCutOffset, offsetof(Params, cfg3) + 4, 4);
     Barrier();

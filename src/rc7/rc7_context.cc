@@ -437,9 +437,15 @@ class Rc7Context final : public AlgorithmContext {
         ImageBarrier(target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, kCompute, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
       }
     };
+    base_only_ = (create_info_.zero_options & kZeroQuarterBase) != 0 && std::abs(phase_ - 0.5f) > 0.2f;
     if (repeat) {
       if ((kReuseOpts & kFuseOutput) != 0) prepare_target();
-      ComposePhase();
+      if (base_only_) {
+        Whole(kMix, 1);
+        Barrier();
+      } else {
+        ComposePhase();
+      }
     } else {
       Surfaces();
       if ((kReuseOpts & kFuseOutput) != 0) prepare_target();
@@ -691,7 +697,14 @@ class Rc7Context final : public AlgorithmContext {
 
   // What the passes know when they are built: blocks, behind, two passes, the screen's hole, guided mattes, the cubic filter, the front
   // always first, the groups from a list, the costs and the statistics over a checkerboard of the patch, the guided window at its radius' step.
-  int RenderOpts() const { return 1 | 2 | 4 | 8 | 16 | (cubic_sampler_ ? 32 : 0) | 64 | 256 | 512 | 1024 | 2048 | 4096 | 8192 | (kHudCells ? 524288 : 0) | (kStopStill ? 2097152 : 0); }
+  // Zero light (CreateInfo::zero_options): one background surface, one render pass, no guided filter. Otherwise the two passes run as one
+  // walk (bit 24), the same picture.
+  bool Light() const { return (create_info_.zero_options & kZeroLight) != 0; }
+  int RenderOpts() const {
+    const bool light = Light();
+    return 1 | 2 | (light ? 0 : 4) | 8 | (light ? 0 : 16) | (cubic_sampler_ ? 32 : 0) | 64 | 256 | 512 | 1024 | 2048 | 4096 | 8192 | (kHudCells ? 524288 : 0) | (kStopStill ? 2097152 : 0) |
+           (light ? 0 : 16777216);
+  }
   bool Phased() const { return std::abs(phase_ - 0.5f) > 0.0001f; }
   uint32_t TilePipe() const { return Phased() ? uint32_t(kTilePh) : uint32_t(kTile); }
 
@@ -1009,7 +1022,7 @@ class Rc7Context final : public AlgorithmContext {
     const uint32_t cx = Groups(fw_, 8), cy = Groups(fh_, 8);
     const uint32_t echo_step = std::max(8u, width_ / 80), ex = Groups(width_ / echo_step, 8), ey = Groups(height_ / echo_step, 8);
     AddStep([=, this] { Run(kSStart, 1, 1); });
-    for (int fit = 0; fit < kPeels; ++fit) {
+    for (int fit = 0; fit < (Light() ? 1 : kPeels); ++fit) {
       AddStep([=, this] { Run(kSList, 1, 1, 0); });
       AddStep([=, this] { Run(kSList, 4, 1, 1); });
       AddStep([=, this] {
@@ -1229,14 +1242,26 @@ class Rc7Context final : public AlgorithmContext {
       Lat(kExtend, 0, flip, jump);
       Lat(kExtend, 1, flip, jump);
       if (jump == 6) {
-        Lat(kGuide, 0);
-        Lat(kGuide1, 1);
+        if (!Light()) {
+          Lat(kGuide, 0);
+          Lat(kGuide1, 1);
+        }
         Run(kTile, tx, ty, 0);
       }
       Barrier();
       flip = 1 - flip;
     }
-    ComposeTail(tx, ty);
+    if (base_only_) BaseOut();
+    else ComposeTail(tx, ty);
+  }
+
+  // kZeroQuarterBase, a phase away from the middle: the base's picture alone. The barriers the tail would have carry the search's steps.
+  void BaseOut() {
+    Barrier();
+    Barrier();
+    Barrier(true);
+    Whole(kMix, 1);
+    Barrier();
   }
 
   // Which layers exist in each block of the picture, each group of the picture into the list of its class, and the picture: what depends
@@ -1347,7 +1372,7 @@ class Rc7Context final : public AlgorithmContext {
   bool in_layers_ = false, have_surfaces_ = false, step_indirect_ = false, long_done_ = false, search_fresh_ = false, arrays_ready_ = false, have_field_ = false;
   // MFG: the record's phase; the next record is another phase of the last pair (SetPairRepeat); the last record succeeded; its B's sequence.
   float phase_ = 0.5f;
-  bool pair_repeat_ = false, record_ok_ = false;
+  bool pair_repeat_ = false, record_ok_ = false, base_only_ = false;
   uint64_t last_sequence_ = 0;
   VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE, crop_set_layout_ = VK_NULL_HANDLE;
   VkPipelineLayout layout_ = VK_NULL_HANDLE, crop_layout_ = VK_NULL_HANDLE;

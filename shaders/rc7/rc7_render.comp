@@ -109,6 +109,62 @@ void oneSurface(int k, int pass_i, vec2 pos, int cover_plane, bool cover_a) {
   rem *= 1.0 - claim;
 }
 
+// The two passes in one walk (R_OPTS bit 24; lab layonce=1, slimming 2026-11-18): each surface is looked at once; what both pictures see
+// goes on at once, as the first pass would put it; the first two that only one picture has wait with their colour, claim and
+// disagreement and go on after the walk in their order, as the second pass would; any more are looked at again then. The same picture bit
+// for bit, with 2.55 surfaces looked at per pixel instead of 3.9 (Arkham): render -7 % on the 840, which runs it at 16 waves either way.
+const bool O_ONCE = (R_OPTS & 16777216) != 0;
+void evalSurface(int k, vec2 pos, int cover_plane, bool cover_a, out vec4 cs, out float dis, out bool both) {
+  cs = vec4(0.0);
+  dis = -1.0;
+  vec2 ba, bb;
+  surfaceMid(k, pos, ba, bb);
+  vec2 a0 = ba, b0 = bb;
+  for (int it = 0; it < R_BEND; ++it) {
+    ba = a0 - PH_A * bendAt(0, k, ba);
+    bb = b0 - PH_B * bendAt(1, k, bb);
+  }
+  bool in_a = insideP(ba), in_b = insideP(bb);
+  float matte_a = matteAt(0, k, ba), matte_b = matteAt(1, k, bb);
+  float bka = in_a ? matte_a : 0.0, bkb = in_b ? matte_b : 0.0;
+  if (k == cover_plane) {
+    if (cover_a) bka = 1.0;
+    else bkb = 1.0;
+  }
+  float claim = max(bka, bkb);
+  both = min(bka, bkb) >= 0.5;
+  if (claim <= 0.01) return;
+  float wa = bka, wb = bkb;
+  uint block_a = O_TILE ? tileAt(ba) : 0xffffffffu, block_b = O_TILE ? tileAt(bb) : 0xffffffffu;
+  uint ta = in_a ? block_a : 0u, tb = in_b ? block_b : 0u;
+  if ((ta & 512u) != 0u) wa *= pow(1.0 - planAt(P_ALPHA, 0, ba), 4.0);
+  if ((tb & 1024u) != 0u) wb *= pow(1.0 - planAt(P_ALPHA, 1, bb), 4.0);
+  if (O_HOLE) {
+    if ((ta & 2048u) != 0u) wa *= 1.0 - planAt(P_HUD, 0, ba);
+    if ((tb & 2048u) != 0u) wb *= 1.0 - planAt(P_HUD, 0, bb);
+  }
+  bool none = wa + wb < 1e-4;
+  wa = none ? bka : wa;
+  wb = none ? bkb : wb;
+  vec3 ca = sharpSample(0, ba), cb = sharpSample(1, bb);
+  vec3 c3 = (wa * ca + wb * cb) / (wa + wb);
+#ifdef ZFG_PHASE
+  {
+    float ua = wa * 2.0 * PH_B, ub = wb * 2.0 * PH_A;
+    c3 = (ua * ca + ub * cb) / (ua + ub);
+  }
+#endif
+  cs = vec4(c3, claim);
+  if (min(wa, wb) > 0.2 * (wa + wb)) dis = l1(sampleSoft(0, ba), sampleSoft(1, bb));
+}
+void putSurface(vec4 cs, float dis) {
+  bool first_on_top = !top_seen && cs.w >= 0.5;
+  if (first_on_top && dis >= 0.0) dis_out = dis;
+  top_seen = top_seen || first_on_top;
+  colour += rem * cs.w * cs.rgb;
+  rem *= 1.0 - cs.w;
+}
+
 void main() {
   ivec2 g = ivec2(gl_WorkGroupID.xy) + ivec2(0, pc.b.x);
   if (O_LIST) {
@@ -205,6 +261,36 @@ void main() {
       rem *= 1.0 - claim_f;
     }
     int passes = O_TWO ? 2 : 1;
+    if (O_ONCE && passes == 2) {
+      vec4 d0 = vec4(0.0), d1 = vec4(0.0);
+      float e0 = -1.0, e1 = -1.0;
+      int nd = 0;
+      uint more = 0u;
+      for (int rank = 0; rank < PLANES && rem > 0.002; ++rank) {
+        int k = orderAt(rank);
+        if (!has_front && (here & (2u << k)) == 0u) continue;
+        vec4 cs;
+        float dis_k;
+        bool both;
+        evalSurface(k, pos, cover_plane, cover_a, cs, dis_k, both);
+        if (cs.w <= 0.0) continue;
+        if (both) putSurface(cs, dis_k);
+        else if (nd == 0) {
+          d0 = cs;
+          e0 = dis_k;
+          nd = 1;
+        } else if (nd == 1) {
+          d1 = cs;
+          e1 = dis_k;
+          nd = 2;
+        } else more |= 1u << rank;
+      }
+      if (nd > 0 && rem > 0.002) putSurface(d0, e0);
+      if (nd > 1 && rem > 0.002) putSurface(d1, e1);
+      for (int rank = 0; rank < PLANES && rem > 0.002; ++rank)
+        if ((more & (1u << rank)) != 0u) oneSurface(orderAt(rank), 1, pos, cover_plane, cover_a);
+      passes = 0;
+    }
     for (int pass_i = 0; pass_i < passes && rem > 0.002; ++pass_i)
       for (int rank = 0; rank < PLANES && rem > 0.002; ++rank) {
         int k = orderAt(rank);

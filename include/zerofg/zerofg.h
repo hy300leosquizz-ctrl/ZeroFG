@@ -118,6 +118,23 @@ struct CreateInfo {
   // Number of independent GPU resource contexts used for
   // frames in flight.
   uint32_t frame_context_count = 3;
+
+  // Zero's development switches (Mode::kZero only; ZeroOption bits), fixed
+  // for the Interpolator's life: the host makes a new one to change them.
+  uint32_t zero_options = 0;
+};
+
+// CreateInfo::zero_options (slimming, 2026-11-18; lab docs/ZERO_SLIM_2026-11.md).
+enum ZeroOption : uint32_t {
+  // Zero light: one background surface, one render pass, the lattice's
+  // mattes without the guided filter. The render about 40 % cheaper on the
+  // Adreno 840; the same or better on the real clips, weaker where several
+  // rigid surfaces cross.
+  kZeroLight = 1u,
+  // MFG: the phases away from the middle (outside 0.3-0.7: x4's quarters)
+  // show the dense-flow base's picture; the layers' picture only near the
+  // middle. The pair's decisions are still made on its first record.
+  kZeroQuarterBase = 2u,
 };
 
 class AlgorithmContext;

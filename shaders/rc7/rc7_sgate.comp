@@ -16,6 +16,7 @@ void main() {
     int i = q.x;
     if (i < 256) s_hist[i] = 0u;
     if (i < 6) s_corr[i] = 0u;
+    if (i < 6) s_corr2[i] = 0u;
     return;
   }
   if (mode == 3) {
@@ -30,6 +31,15 @@ void main() {
     atomicAdd(s_corr[3], b * b);
     atomicAdd(s_corr[4], a * b);
     atomicAdd(s_corr[5], 1u);
+    uint lit = uint(pc.a.y);
+    if (lit > 0u && a >= lit && b >= lit) {
+      atomicAdd(s_corr2[0], a);
+      atomicAdd(s_corr2[1], b);
+      atomicAdd(s_corr2[2], a * a);
+      atomicAdd(s_corr2[3], b * b);
+      atomicAdd(s_corr2[4], a * b);
+      atomicAdd(s_corr2[5], 1u);
+    }
     return;
   }
   if (mode == 1) {
@@ -66,5 +76,13 @@ void main() {
   float n = max(1.0, float(s_corr[5])), mean_a = float(s_corr[0]) / n, mean_b = float(s_corr[1]) / n;
   float va = float(s_corr[2]) / n - mean_a * mean_a, vb = float(s_corr[3]) / n - mean_b * mean_b, cov = float(s_corr[4]) / n - mean_a * mean_b;
   float correlation = va * vb > 1.0 ? cov / sqrt(va * vb) : (max(va, vb) > 16.0 ? 0.0 : 1.0);
+  // pc.a.y (kCutLit; the owner 2026-11-19: a wipe interpolates): with a tenth of the points lit in both pictures, a pair is a cut only if
+  // those do not correlate either. A wipe's ring (picture in one, black in the other) breaks the whole picture's correlation, not the lit
+  // inside's; a cut between two lit scenes breaks both. This only takes cuts away: dark motion that correlates as a whole stays as it was.
+  if (pc.a.y > 0 && s_corr2[5] * 10u >= s_corr[5]) {
+    float n2 = float(s_corr2[5]), ma = float(s_corr2[0]) / n2, mb = float(s_corr2[1]) / n2;
+    float va2 = float(s_corr2[2]) / n2 - ma * ma, vb2 = float(s_corr2[3]) / n2 - mb * mb, cov2 = float(s_corr2[4]) / n2 - ma * mb;
+    correlation = max(correlation, va2 * vb2 > 1.0 ? cov2 / sqrt(va2 * vb2) : (max(va2, vb2) > 16.0 ? 0.0 : 1.0));
+  }
   s_cut = correlation * 1000.0 < float(pc.b.y) ? 1 : 0;
 }

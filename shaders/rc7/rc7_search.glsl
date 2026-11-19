@@ -32,6 +32,7 @@ layout(std430, binding = 25) buffer SearchBuf {
   vec4 t_H[18];      // the surfaces being followed from pair to pair
   uint s_corr[6];    // sums over a sparse grid of the softened pictures: luma of A and of B, their squares and product, the count
   int s_cut;         // 1: the two pictures do not correlate at all: copied over cfg3.y
+  uint s_corr2[6];   // the same sums over the points lit in both pictures (kCutLit)
 };
 
 const int HYP_AFFINE = 96;

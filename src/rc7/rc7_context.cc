@@ -83,6 +83,9 @@ constexpr int kBaseBar = 80, kBaseBarFront = 80;
 #endif
 constexpr bool kBaseFullSize = ZFG_RC7_BASE_FULL != 0;  // the base's picture at the Reals' size, its flow still from the half-size ones: sharper where it is used, about a millisecond more on the Adreno at 3x
 constexpr int kCutCorrelation = 300;  // per mille: under this co-located correlation of the softened pictures the pair is a cut and shows B whole
+// 8-bit luma (owner 2026-11-19: a wipe interpolates): with a tenth of the sampled points lit in both pictures, a pair is a cut only if those do
+// not correlate either. A circle wipe broke the whole picture's correlation and showed B whole (Rayman: -2.49 dB on its transition).
+constexpr int kCutLit = 40;
 constexpr int kHudMemory = 0;  // percent of each pair in the screen's memory: what was the screen lately and still repeats in place stays the screen
 // The screen by cells (review 12.4, R_OPTS bit 19): strokes and exact repeats teach a memory per cell (P_HUDMEM), and a remembered cell gives
 // the screen only its pixels that are the same in A and B; what moves in it stays the layers'. 0 is the screen of 1.1.
@@ -1128,10 +1131,10 @@ class Rc7Context final : public AlgorithmContext {
     Barrier();
     Lat(kHudRule, screen_now_ ? 1 : 0);
     Run(kSGate, Groups(std::max(1u, lw_ / 2), 8), Groups(std::max(1u, lh_ / 2), 8), 1);
-    Run(kSGate, Groups(std::max(1u, lw_ / 4), 8), Groups(std::max(1u, lh_ / 4), 8), 3);
+    Run(kSGate, Groups(std::max(1u, lw_ / 4), 8), Groups(std::max(1u, lh_ / 4), 8), 3, kCutLit);
     Barrier();
     Lat(kMorph, 0, P_HUD, P_TMP, 2, 0);
-    Run(kSGate, 1, 1, 2, 0, 0, 0, kFloorGate, kCutCorrelation);
+    Run(kSGate, 1, 1, 2, kCutLit, 0, 0, kFloorGate, kCutCorrelation);
     CopyToParams(896, offsetof(Params, gate), 16);
     CopyToParams(kCutOffset, offsetof(Params, cfg3) + 4, 4);
     Barrier();

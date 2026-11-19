@@ -90,4 +90,7 @@ void main() {
   // median cost at least this). Fast motion over fine texture breaks the sparse correlation as a cut does, but the search still explains it
   // (median 0.06-0.13 on Arkham); a cut leaves every cost at the top of the histogram (0.24).
   s_cut = correlation * 1000.0 < float(pc.b.y) && median_low * 1000.0 >= float(pc.a.z) ? 1 : 0;
+  // pc.a.w (kEasy, ten-thousandths, the owner 2026-11-19): a pair the motion search explains almost everywhere is the base's whole (2). On such
+  // pairs the base beat Zero on 60 of 62 (Arkham 1) and 76 of 76 (Arkham 2) of the pairs it scores 32 dB or more on.
+  if (s_cut == 0 && median_low * 10000.0 < float(pc.a.w)) s_cut = 2;
 }

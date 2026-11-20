@@ -73,7 +73,7 @@ constexpr int kCutCorrelation = 300;  // thousandths: under this co-located corr
 constexpr uint32_t kCutLevelWidth = 128;
 // Standalone RZ only: direct cleanup args, grouped cut, lazy sharp samples,
 // identity-store elision and texture-only fine flow. Pyramid retention is separate.
-constexpr int kProductOpts = 31 | 32 | 64;  // RZ+ (2026-11-20): 32 the camera start, 64 the HUD hold (shaders/df/df_common.glsl)
+constexpr int kProductOpts = 31 | 32 | 64 | 128;  // RZ+ (2026-11-20): 32 the camera start, 64 the HUD hold, 128 the cut over the lit points (shaders/df/df_common.glsl)
 
 uint32_t Groups(uint32_t extent, uint32_t local) { return (extent + local - 1) / local; }
 

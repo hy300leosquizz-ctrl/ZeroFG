@@ -60,6 +60,10 @@ float rem = 1.0, dis_out = -1.0;
 bool top_seen = false;
 
 // One surface over what is there. pass_i: with two passes, which one this is, what both pictures see going first; else -1. cover: the surface what only one picture has goes behind, if any.
+// R_OPTS bit 26 (kRenderMatte, slimming round 13): a surface's mattes, blocks and plans read where its model puts the sample before the fine
+// step (a fraction of a pixel, on fields that live on the lattice), so their fetches leave with the bend's instead of waiting for it; only the
+// colours wait for the bend. Lab layrmatte: quality identical on five clips; the render -5 % on the S20 FE (Adreno 650), level on the 840.
+const bool O_RMATTE = (R_OPTS & 67108864) != 0;
 void oneSurface(int k, int pass_i, vec2 pos, int cover_plane, bool cover_a) {
   vec2 ba, bb;
   surfaceMid(k, pos, ba, bb);
@@ -70,7 +74,8 @@ void oneSurface(int k, int pass_i, vec2 pos, int cover_plane, bool cover_a) {
     bb = b0 - PH_B * bendAt(1, k, bb);
   }
   bool in_a = insideP(ba), in_b = insideP(bb);
-  float matte_a = matteAt(0, k, ba), matte_b = matteAt(1, k, bb);
+  vec2 ma = O_RMATTE ? a0 : ba, mb = O_RMATTE ? b0 : bb;  // kRenderMatte: the lattice fields before the fine step
+  float matte_a = matteAt(0, k, ma), matte_b = matteAt(1, k, mb);
   float bka = in_a ? matte_a : 0.0, bkb = in_b ? matte_b : 0.0;
   if (k == cover_plane) {
     if (cover_a) bka = 1.0;
@@ -81,13 +86,13 @@ void oneSurface(int k, int pass_i, vec2 pos, int cover_plane, bool cover_a) {
   if (pass_i >= 0 && (pass_i == 0) != (min(bka, bkb) >= 0.5)) return;
   float wa = bka, wb = bkb;
   // How far this sample is from the front's rim in its own picture.
-  uint block_a = O_TILE ? tileAt(ba) : 0xffffffffu, block_b = O_TILE ? tileAt(bb) : 0xffffffffu;
+  uint block_a = O_TILE ? tileAt(ma) : 0xffffffffu, block_b = O_TILE ? tileAt(mb) : 0xffffffffu;
   uint ta = in_a ? block_a : 0u, tb = in_b ? block_b : 0u;
-  if ((ta & 512u) != 0u) wa *= pow(1.0 - planAt(P_ALPHA, 0, ba), 4.0);
-  if ((tb & 1024u) != 0u) wb *= pow(1.0 - planAt(P_ALPHA, 1, bb), 4.0);
+  if ((ta & 512u) != 0u) wa *= pow(1.0 - planAt(P_ALPHA, 0, ma), 4.0);
+  if ((tb & 1024u) != 0u) wb *= pow(1.0 - planAt(P_ALPHA, 1, mb), 4.0);
   if (O_HOLE) {
-    if ((ta & 2048u) != 0u) wa *= 1.0 - planAt(P_HUD, 0, ba);
-    if ((tb & 2048u) != 0u) wb *= 1.0 - planAt(P_HUD, 0, bb);
+    if ((ta & 2048u) != 0u) wa *= 1.0 - planAt(P_HUD, 0, ma);
+    if ((tb & 2048u) != 0u) wb *= 1.0 - planAt(P_HUD, 0, mb);
   }
   bool none = wa + wb < 1e-4;
   wa = none ? bka : wa;
@@ -125,7 +130,8 @@ void evalSurface(int k, vec2 pos, int cover_plane, bool cover_a, out vec4 cs, ou
     bb = b0 - PH_B * bendAt(1, k, bb);
   }
   bool in_a = insideP(ba), in_b = insideP(bb);
-  float matte_a = matteAt(0, k, ba), matte_b = matteAt(1, k, bb);
+  vec2 ma = O_RMATTE ? a0 : ba, mb = O_RMATTE ? b0 : bb;  // kRenderMatte: the lattice fields before the fine step
+  float matte_a = matteAt(0, k, ma), matte_b = matteAt(1, k, mb);
   float bka = in_a ? matte_a : 0.0, bkb = in_b ? matte_b : 0.0;
   if (k == cover_plane) {
     if (cover_a) bka = 1.0;
@@ -135,13 +141,13 @@ void evalSurface(int k, vec2 pos, int cover_plane, bool cover_a, out vec4 cs, ou
   both = min(bka, bkb) >= 0.5;
   if (claim <= 0.01) return;
   float wa = bka, wb = bkb;
-  uint block_a = O_TILE ? tileAt(ba) : 0xffffffffu, block_b = O_TILE ? tileAt(bb) : 0xffffffffu;
+  uint block_a = O_TILE ? tileAt(ma) : 0xffffffffu, block_b = O_TILE ? tileAt(mb) : 0xffffffffu;
   uint ta = in_a ? block_a : 0u, tb = in_b ? block_b : 0u;
-  if ((ta & 512u) != 0u) wa *= pow(1.0 - planAt(P_ALPHA, 0, ba), 4.0);
-  if ((tb & 1024u) != 0u) wb *= pow(1.0 - planAt(P_ALPHA, 1, bb), 4.0);
+  if ((ta & 512u) != 0u) wa *= pow(1.0 - planAt(P_ALPHA, 0, ma), 4.0);
+  if ((tb & 1024u) != 0u) wb *= pow(1.0 - planAt(P_ALPHA, 1, mb), 4.0);
   if (O_HOLE) {
-    if ((ta & 2048u) != 0u) wa *= 1.0 - planAt(P_HUD, 0, ba);
-    if ((tb & 2048u) != 0u) wb *= 1.0 - planAt(P_HUD, 0, bb);
+    if ((ta & 2048u) != 0u) wa *= 1.0 - planAt(P_HUD, 0, ma);
+    if ((tb & 2048u) != 0u) wb *= 1.0 - planAt(P_HUD, 0, mb);
   }
   bool none = wa + wb < 1e-4;
   wa = none ? bka : wa;

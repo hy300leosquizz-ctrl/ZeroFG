@@ -8,6 +8,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -606,6 +608,11 @@ class Rc7Context final : public AlgorithmContext {
 
   // One layout for every pass, bindings as in shaders/rc7/rc7_common.glsl, 33 the output. Two sets, which differ in the pictures only: the decisions may read the half-size ones.
   Status CreatePipelines() {
+    {
+      VkPhysicalDeviceProperties properties{};
+      dispatch_.get_physical_device_properties(vulkan_.physical_device, &properties);
+      render_once_ = OnceWalkPays(properties.deviceName);
+    }
     const VkDescriptorType kS = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kI = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kB = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     std::vector<VkDescriptorType> types(40, kB);  // 39: SkipBuf (kSkip)
     types[0] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -738,12 +745,21 @@ class Rc7Context final : public AlgorithmContext {
   // What the passes know when they are built: blocks, behind, two passes, the screen's hole, guided mattes, the cubic filter, the front
   // always first, the groups from a list, the costs and the statistics over a checkerboard of the patch, the guided window at its radius' step.
   // Zero light (CreateInfo::zero_options): one background surface, one render pass, no guided filter. Otherwise the two passes run as one
-  // walk (bit 24), the same picture.
+  // walk (bit 24), the same picture, only on an Adreno 8xx: the walk holds two surfaces in registers, which the 840 has room for (16 waves
+  // either way, render -7 to -12 %) and the Adreno 650 has not (10 -> 8 waves per core, render +48 %, the pair +15 to +22 %; round 13).
+  // Bit 26 (kRenderMatte, round 13): the mattes read before the fine step (render -5 % on the 650, level on the 840, the same quality).
   bool Light() const { return (create_info_.zero_options & kZeroLight) != 0; }
   int RenderOpts() const {
     const bool light = Light();
     return 1 | 2 | (light ? 0 : 4) | 8 | (light ? 0 : 16) | (cubic_sampler_ ? 32 : 0) | 64 | 256 | 512 | 1024 | 2048 | 4096 | 8192 | (kHudCells ? 524288 : 0) | (kStopStill ? 2097152 : 0) |
-           (light ? 0 : 16777216) | 134217728;  // 134217728: kHudBlock (rc7_hud.comp, round 13)
+           (light || !render_once_ ? 0 : 16777216) | 67108864 | 134217728;  // 134217728: kHudBlock (rc7_hud.comp, round 13)
+  }
+  // Round 13: the render's one walk only where it was measured to pay, an Adreno 8xx (the name's number, 800 and up).
+  static bool OnceWalkPays(const char* name) {
+    const char* at = std::strstr(name, "Adreno");
+    if (at == nullptr) return false;
+    while (*at != '\0' && (*at < '0' || *at > '9')) ++at;
+    return std::atoi(at) >= 800;
   }
   bool Phased() const { return std::abs(phase_ - 0.5f) > 0.0001f; }
   uint32_t TilePipe() const { return Phased() ? uint32_t(kTilePh) : uint32_t(kTile); }
@@ -1428,6 +1444,7 @@ class Rc7Context final : public AlgorithmContext {
   static constexpr uint32_t kSkipSizes = 4;
   uint32_t skip_sizes_[kSkipSizes][2] = {};
   bool skip_now_ = false, in_step_ = false;
+  bool render_once_ = false;  // round 13: the render's one walk (bit 24) on an Adreno 8xx only (OnceWalkPays)
   VkSampler sampler_ = VK_NULL_HANDLE, cubic_sampler_ = VK_NULL_HANDLE;
   struct Step {
     std::function<void()> run;

@@ -93,6 +93,14 @@ constexpr int kCutCost = 160;
 // cfg3.y = 2). On calm pairs the base beat Zero on nearly every pair (a sub-pixel film, HUD text fading in on a still scene). Lab layeasy=50:
 // Arkham 2 -0.79 -> -0.08 dB per pair, Arkham 1 -0.45 -> -0.30, God of War II -0.36 -> -0.30, Katamari 2 +0.17 -> +0.13; hard pairs unchanged.
 constexpr int kEasy = 50;
+// Slimming round 13 (lab layskip, 2026-11-19): a pair the gates give to the base whole (kEasy) or call a cut runs none of the passes after
+// the gates but the mix: they are recorded indirect, with the groups the gates leave in SkipBuf (zero on such a pair). The picture of that
+// pair is the same (the mix writes the base or B whole either way). Vega, lab: the calm pairs 6.13 -> 3.37 ms (Arkham 2, 69 of 136 pairs),
+// 11.47 -> 4.67 (Katamari 2), quality within 0.001 dB (only the front's last field, a candidate of the next pair, differs after one).
+#ifndef ZFG_SKIP
+#define ZFG_SKIP 1
+#endif
+constexpr bool kSkip = ZFG_SKIP != 0;
 constexpr int kHudMemory = 0;  // percent of each pair in the screen's memory: what was the screen lately and still repeats in place stays the screen
 // The screen by cells (review 12.4, R_OPTS bit 19): strokes and exact repeats teach a memory per cell (P_HUDMEM), and a remembered cell gives
 // the screen only its pixels that are the same in A and B; what moves in it stays the layers'. 0 is the screen of 1.1.
@@ -224,6 +232,16 @@ class Rc7Context final : public AlgorithmContext {
     block_ = std::max(8u, 32u / step_);
     gw_ = Groups(lw_, block_);
     gh_ = Groups(lh_, block_);
+    // kSkip: the sizes of the layers' dispatches after the gates (the lattice, the fine step's coarse grid, the mattes' blocks, the picture's
+    // blocks of 16), as Run records them.
+    const uint32_t sizes[kSkipSizes][2] = {{Groups(lw_, 8), Groups(lh_, 8)},
+                                           {Groups(std::max(1u, lw_ / 4), 8), Groups(std::max(1u, lh_ / 4), 8)},
+                                           {Groups(gw_, 4), Groups(gh_, 4)},
+                                           {Groups(Groups(width_, 16), 8), Groups(Groups(height_, 16), 8)}};
+    for (uint32_t c = 0; c < kSkipSizes; ++c) {
+      skip_sizes_[c][0] = std::max(1u, sizes[c][0]);
+      skip_sizes_[c][1] = std::max(1u, sizes[c][1]);
+    }
     uint32_t run_w = width, run_h = height;
     TiledExtent(width, height, &run_w, &run_h);
     const VkExtent2D field = FieldExtent(run_w, run_h);
@@ -404,6 +422,16 @@ class Rc7Context final : public AlgorithmContext {
     if (!repeat) {
       dispatch_.cmd_fill_buffer(cmd, counter_.buffer(), 0, VK_WHOLE_SIZE, 0);
       WriteParams();
+      if (kSkip) {
+        // Every size of dispatch the layers' passes after the gates use, in full; the gates copy them (or zero groups) for this pair.
+        uint32_t full[8][4] = {};
+        for (uint32_t c = 0; c < kSkipSizes; ++c) {
+          full[c][0] = skip_sizes_[c][0];
+          full[c][1] = skip_sizes_[c][1];
+          full[c][2] = 1;
+        }
+        cmd_update_buffer_(cmd, skip_.buffer(), 0, sizeof(full), full);
+      }
     }
     if (!arrays_ready_) {
       // Arrays of images that stay in the general layout; the bends start at zero (the still surface never gets one).
@@ -464,6 +492,7 @@ class Rc7Context final : public AlgorithmContext {
       Barrier();
       have_surfaces_ = true;
     }
+    skip_now_ = false;
 
     // The picture leaves.
     if ((kReuseOpts & kFuseOutput) == 0) {
@@ -552,6 +581,7 @@ class Rc7Context final : public AlgorithmContext {
         {&tiles_, VkDeviceSize(Groups(width_, 16)) * Groups(height_, 16) * 2 * 4, storage},
         {&thumb_, 256 + 24 * 16 + 4480 * (16 + 16) + 2 * 4 * VkDeviceSize(width_ / 8 + 2) * (height_ / 8 + 2), storage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT},
         {&dummy_, 256, storage},
+        {&skip_, 256, storage | dst | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT},
     };
     for (const auto& b : buffers) {
       status = b.buffer->Create(vulkan_, dispatch_, b.size, b.usage);
@@ -577,7 +607,7 @@ class Rc7Context final : public AlgorithmContext {
   // One layout for every pass, bindings as in shaders/rc7/rc7_common.glsl, 33 the output. Two sets, which differ in the pictures only: the decisions may read the half-size ones.
   Status CreatePipelines() {
     const VkDescriptorType kS = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kI = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kB = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    std::vector<VkDescriptorType> types(39, kB);
+    std::vector<VkDescriptorType> types(40, kB);  // 39: SkipBuf (kSkip)
     types[0] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     types[9] = types[11] = types[12] = types[13] = types[14] = types[22] = types[23] = types[30] = types[31] = types[38] = kS;
     types[15] = types[16] = types[28] = types[29] = types[33] = types[34] = types[35] = types[36] = types[37] = kI;
@@ -603,7 +633,7 @@ class Rc7Context final : public AlgorithmContext {
     if (dispatch_.create_pipeline_layout(vulkan_.device, &pl, vulkan_.allocator, &layout_) != VK_SUCCESS) return Status::kVulkanError;
     // One copy of the sets per frame context: a record writes the Reals and the output into its own copy, while the record before may still be running.
     const uint32_t copies = std::max(1u, create_info_.frame_context_count);
-    VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2 * copies}, {kS, 20 * copies}, {kI, 18 * copies}, {kB, 38 * copies}};
+    VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2 * copies}, {kS, 20 * copies}, {kI, 18 * copies}, {kB, 40 * copies}};
     VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     dpi.maxSets = 2 * copies;
     dpi.poolSizeCount = 4;
@@ -773,7 +803,7 @@ class Rc7Context final : public AlgorithmContext {
     } buffers[] = {{1, cost_.buffer()},  {2, label_.buffer()},  {3, plan_.buffer()},    {4, stat_.buffer()},     {5, front_.buffer()},  {6, palpha_.buffer()},
                    {7, cells_.buffer()}, {8, out_.buffer()},    {10, disagree_.buffer()}, {17, dense_->flow_buffer()}, {18, counter_.buffer()}, {19, blocks_.buffer()},
                    {20, dummy_.buffer()}, {21, dummy_.buffer()}, {24, tiles_.buffer()}, {25, search_.buffer()},
-                   {26, thumb_.buffer()}, {27, flist_.buffer()}, {32, snap_.buffer()}};
+                   {26, thumb_.buffer()}, {27, flist_.buffer()}, {32, snap_.buffer()}, {39, skip_.buffer()}};
     for (const auto& b : buffers) BindBuffer(b.binding, b.buffer);
     const VkImageLayout general = VK_IMAGE_LAYOUT_GENERAL;
     BindSampled(9, base_.view(), general);
@@ -831,7 +861,9 @@ class Rc7Context final : public AlgorithmContext {
     if (is_long && (!wide_next || (in_layers_ && long_done_))) return;
     if (is_long) long_done_ = true;
     const size_t step = step_next_++;
+    in_step_ = true;  // kSkip: the search's own dispatches always run
     steps_[step].run();
+    in_step_ = false;
     step_indirect_ = steps_[step].indirect;
     step_now_us_ = steps_[step].us;
     if (step_next_ >= steps_.size()) search_fresh_ = true;
@@ -892,7 +924,20 @@ class Rc7Context final : public AlgorithmContext {
     push.b[0] = b0;
     push.b[1] = b1;
     Bind(pipe, push);
-    dispatch_.cmd_dispatch(cmd_, std::max(1u, gx), std::max(1u, gy), 1);
+    gx = std::max(1u, gx);
+    gy = std::max(1u, gy);
+    // kSkip: after the gates, a layers' pass takes its groups from what the gates left for its size (SkipBuf: all of them, or none on a pair
+    // that is the base's whole or a cut). Never the mix, the two one-group passes that write the lists' dispatch arguments (from counts that
+    // start at zero each pair, so on a skipped pair they write zero groups), or a step of the background search.
+    const bool writes_args = (pipe == kFList && a0 == 1) || ((pipe == kTile || pipe == kTilePh) && a0 == 4);
+    if (kSkip && skip_now_ && !in_step_ && pipe != kMix && !writes_args) {
+      for (uint32_t c = 0; c < kSkipSizes; ++c)
+        if (skip_sizes_[c][0] == gx && skip_sizes_[c][1] == gy) {
+          cmd_dispatch_indirect_(cmd_, skip_.buffer(), 128 + VkDeviceSize(c) * 16);
+          return;
+        }
+    }
+    dispatch_.cmd_dispatch(cmd_, gx, gy, 1);
   }
 
   void Indirect(uint32_t pipe, VkDeviceSize offset, int a0) {
@@ -1146,9 +1191,12 @@ class Rc7Context final : public AlgorithmContext {
     Lat(kMorph, 0, P_HUD, P_TMP, 2, 0);
     CopyToParams(896, offsetof(Params, gate), 16);
     CopyToParams(kCutOffset, offsetof(Params, cfg3) + 4, 4);
+    if (kSkip) step_indirect_ = true;  // the gates wrote the later passes' groups (SkipBuf): the next barrier covers the indirect reads
     Barrier();
     Lat(kMorph, 0, P_TMP, P_HUD, 2, 1);
     Barrier();
+    // kSkip: from here on, a pair the gates gave to the base whole (or a cut) runs none of the passes but the mix.
+    skip_now_ = kSkip;
     // The labels: seeds, then jumps, every point reading the round before; the last one also fixes what is left.
     Lat(kSeed, 0);
     Lat(kSeed, 1);
@@ -1306,6 +1354,11 @@ class Rc7Context final : public AlgorithmContext {
   // (their counts, flist_ offset 160, not the front's list at 32), the picture, the judge and the mix are recorded again. The background
   // search rides the pair: in_layers_ stays false, so no step of it runs here.
   void ComposePhase() {
+    if (kSkip) {
+      // The pair's gates (an earlier record) left the groups this repeat's passes read indirectly: a repeat of a skipped pair is its mix.
+      IndirectBarrier();
+      skip_now_ = true;
+    }
     dispatch_.cmd_fill_buffer(cmd_, flist_.buffer(), 160, 28, 0);
     MemoryBarrier(VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
     const uint32_t tx = Groups(Groups(width_, 16), 8), ty = Groups(Groups(height_, 16), 8);
@@ -1343,7 +1396,7 @@ class Rc7Context final : public AlgorithmContext {
     decide_sets_.clear();
     crop_sets_.clear();
     for (OwnedImage* image : {&soft_[0], &soft_[1], &half_[0], &half_[1], &quarter_[0], &quarter_[1], &base_, &fallback_, &tight_[0], &tight_[1], &guide_, &bend_}) image->Destroy(vulkan_, dispatch_);
-    for (OwnedBuffer* buffer : {&params_, &search_, &cost_, &label_, &plan_, &stat_, &front_, &palpha_, &cells_, &out_, &disagree_, &counter_, &blocks_, &tiles_, &thumb_, &flist_, &snap_, &dummy_}) buffer->Destroy(vulkan_, dispatch_);
+    for (OwnedBuffer* buffer : {&params_, &search_, &cost_, &label_, &plan_, &stat_, &front_, &palpha_, &cells_, &out_, &disagree_, &counter_, &blocks_, &tiles_, &thumb_, &flist_, &snap_, &dummy_, &skip_}) buffer->Destroy(vulkan_, dispatch_);
     if (sampler_ != VK_NULL_HANDLE) dispatch_.destroy_sampler(vulkan_.device, sampler_, vulkan_.allocator);
     if (cubic_sampler_ != VK_NULL_HANDLE) dispatch_.destroy_sampler(vulkan_.device, cubic_sampler_, vulkan_.allocator);
     sampler_ = cubic_sampler_ = VK_NULL_HANDLE;
@@ -1369,7 +1422,12 @@ class Rc7Context final : public AlgorithmContext {
   uint32_t hud_turn_ = 0;    // kHudCells: which lattice point in sixteen reads its cell's own pixels this pair
   Image screen_truth_{};     // SetScreenTruth: the host's screen, codes as in shaders/rc7/rc7_hudgs.comp
   bool screen_now_ = false;  // this record adds it to the guess
-  OwnedBuffer params_, search_, cost_, label_, plan_, stat_, front_, palpha_, cells_, out_, disagree_, counter_, blocks_, tiles_, thumb_, flist_, snap_, dummy_;
+  OwnedBuffer params_, search_, cost_, label_, plan_, stat_, front_, palpha_, cells_, out_, disagree_, counter_, blocks_, tiles_, thumb_, flist_, snap_, dummy_, skip_;
+  // kSkip: while set, Run records a layers' pass from the gates' groups (SkipBuf, offset 128 + 16 per size); in_step_ marks a step of the
+  // background search, which always runs.
+  static constexpr uint32_t kSkipSizes = 4;
+  uint32_t skip_sizes_[kSkipSizes][2] = {};
+  bool skip_now_ = false, in_step_ = false;
   VkSampler sampler_ = VK_NULL_HANDLE, cubic_sampler_ = VK_NULL_HANDLE;
   struct Step {
     std::function<void()> run;

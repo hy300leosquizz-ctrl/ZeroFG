@@ -93,4 +93,6 @@ void main() {
   // pc.a.w (kEasy, ten-thousandths, the owner 2026-11-19): a pair the motion search explains almost everywhere is the base's whole (2). On such
   // pairs the base beat Zero on 60 of 62 (Arkham 1) and 76 of 76 (Arkham 2) of the pairs it scores 32 dB or more on.
   if (s_cut == 0 && median_low * 10000.0 < float(pc.a.w)) s_cut = 2;
+  // kSkip (slimming round 13): a pair that is the base's whole or a cut needs none of the passes after the gates; the mix alone writes it.
+  for (int c = 0; c < 8; ++c) k_live[c] = s_cut == 0 ? k_full[c] : uvec4(0u);
 }

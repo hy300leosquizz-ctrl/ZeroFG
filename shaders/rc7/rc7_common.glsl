@@ -58,6 +58,10 @@ layout(std430, binding = 24) buffer TileBuf { uint tiles[]; };     // [marked, w
 layout(binding = 28, rgb10_a2) uniform writeonly image2D halfOutA;  // the half-size pictures the decisions read when the Reals are large
 layout(binding = 29, rgb10_a2) uniform writeonly image2D halfOutB;
 layout(std430, binding = 32) buffer SnapBuf { vec4 snap[]; };      // the cells as they were when the search under way started
+// kSkip (slimming round 13): the dispatch arguments of the passes after the gates, one record per size of dispatch: k_full as the host
+// writes them each pair, k_live as this pair's gates left them (k_full when the pair is interpolated, zero groups when it is the base's
+// whole or a cut: rc7_sgate.comp).
+layout(std430, binding = 39) buffer SkipBuf { uvec4 k_full[8]; uvec4 k_live[8]; };
 layout(binding = 30) uniform sampler2D cubicA;                     // the Reals through the hardware's cubic filter, when it has one: only the render reads them
 layout(binding = 31) uniform sampler2D cubicB;
 // The matte's points of each picture, x | y << 16, and the dispatches over them; after them, the picture's groups by class (one list per surface, then everything else), and theirs.

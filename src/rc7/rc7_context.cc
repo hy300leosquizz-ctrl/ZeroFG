@@ -743,7 +743,7 @@ class Rc7Context final : public AlgorithmContext {
   int RenderOpts() const {
     const bool light = Light();
     return 1 | 2 | (light ? 0 : 4) | 8 | (light ? 0 : 16) | (cubic_sampler_ ? 32 : 0) | 64 | 256 | 512 | 1024 | 2048 | 4096 | 8192 | (kHudCells ? 524288 : 0) | (kStopStill ? 2097152 : 0) |
-           (light ? 0 : 16777216);
+           (light ? 0 : 16777216) | 134217728;  // 134217728: kHudBlock (rc7_hud.comp, round 13)
   }
   bool Phased() const { return std::abs(phase_ - 0.5f) > 0.0001f; }
   uint32_t TilePipe() const { return Phased() ? uint32_t(kTilePh) : uint32_t(kTile); }

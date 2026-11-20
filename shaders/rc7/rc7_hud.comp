@@ -43,7 +43,13 @@ void main() {
   // The cell's own pixels are read on one lattice point in sixteen per pair (O_HUDCELL; the memory adds the pairs up; one in four cost
   // 2.5 ms on the Adreno 840 over the 1536 x 1344 Katamari bars), or on every point
   // (layhudpx bit 1, the lab's whole-cell form).
-  bool look = (R_OPTS & 131072) != 0 || (O_HUDCELL && (q.x & 3) + 4 * (q.y & 3) == pc.a.x);
+  // R_OPTS bit 27 (kHudBlock, slimming round 13): the points that read their cells this pair are whole groups, one group in sixteen,
+  // instead of one point in sixteen of every group: a wave lasts as long as its slowest lane, so with the points spread every wave paid
+  // the scan. Every point still reads its cell once in sixteen pairs. Lab layhudblk: quality identical on five clips; the screen 1.67 ->
+  // 1.44 ms on the S20 FE, 0.33 -> 0.29 on the 840.
+  const bool O_HUDBLK = (R_OPTS & 134217728) != 0;
+  int turn_here = O_HUDBLK ? int(gl_WorkGroupID.x & 3u) + 4 * int(gl_WorkGroupID.y & 3u) : (q.x & 3) + 4 * (q.y & 3);
+  bool look = (R_OPTS & 131072) != 0 || (O_HUDCELL && turn_here == pc.a.x);
   if (!exact && !remembered && !cell_memory && !look && u.th4.x <= 0.0) return;
   ivec2 cq = clamp(ivec2(pos / u.cell.xy), ivec2(0), ivec2(u.cfg2.x - 1, u.cfg2.y - 1));
   vec2 v = cells[cq.y * u.cfg2.x + cq.x].zw;

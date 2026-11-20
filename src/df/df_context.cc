@@ -888,7 +888,9 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
     fin.a[0] = int32_t(PictureW()); fin.a[1] = int32_t(PictureH()); fin.a[2] = 1; fin.a[3] = (1 << finest_) * picture_scale;
     fin.b[0] = int32_t(F.w); fin.b[1] = int32_t(F.h); fin.b[2] = F.flow0; fin.b[3] = F.flow1;
     fin.c[1] = kStillBar;
-    fin.c[2] = product_ && first ? 1 : 0;   // RZ+ HUD hold: this picture advances the runs
+    // RZ+ HUD hold: the pair's stamp (from 1), and on its first picture the runs advance.
+    if (product_ && first) ++hud_pair_;
+    fin.c[2] = product_ ? int32_t((hud_pair_ << 1) | (first ? 1u : 0u)) : 0;
     fin.c[3] = 1 | 2;
     fin.p[0] = kSigma; fin.p[1] = kDisagreement; fin.p[2] = product_ ? kLoopAt640 * float(width_) / 640.0f : kLoop * float(picture_scale); fin.p[3] = Phased() ? phase_ : 1.0f;
     Dispatch(cmd, Stage::kFinal, 0, &fin, sizeof(fin), Groups(PictureW(), 8), Groups(PictureH(), 8));
@@ -1009,6 +1011,7 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
   OwnedBuffer pyramid_, flow_, patch_flow_, middle_, dummy_, clean_;
   OwnedBuffer hud_runs_;      // RZ+ HUD hold: one run of pairs per picture pixel (product only)
   bool hud_runs_zeroed_ = false;
+  uint32_t hud_pair_ = 0;     // RZ+ HUD hold: the stamp of the pair being recorded (its runs carry the last pair they were seen in)
   PFN_vkCmdDispatchIndirect cmd_dispatch_indirect_ = nullptr;
   VkSampler sampler_ = VK_NULL_HANDLE;
   uint32_t frame_contexts_ = 1, slot_ = 0;

@@ -134,13 +134,19 @@ void main() {
                                max(hud_l1(here_a, texelFetch(realA, clamp(xy + ivec2(0, 3), ivec2(0), top), 0).rgb), hud_l1(here_a, texelFetch(realA, clamp(xy - ivec2(0, 3), ivec2(0), top), 0).rgb)));
             loose = stands >= 0.05;
           }
-          uint run = acc[y * W + x];
-          if (pc.c.z != 0) {
-            uint next = loose ? min(run + 1u, 64u) : 0u;
-            if (next != run) acc[y * W + x] = next;
-            run = next;
+          // The run carries the pair it was last seen in (word = pair << 6 | run; pc.c.z = pair << 1, | 1 on the pair's first picture): a
+          // pixel that fails the cheap test neither reads nor writes, its run is over because its stamp is stale (lab: the S20's final pass
+          // paid 1.6 ms for one read per pixel, 0.7 with the stamp; a storage read costs two fetches on its Turnip).
+          if (loose) {
+            uint cur = uint(pc.c.z) >> 1, word = acc[y * W + x], stamp = word >> 6, run = word & 63u, next;
+            if ((pc.c.z & 1) != 0) {
+              next = stamp + 1u == cur ? min(run + 1u, 63u) : stamp == cur ? run : 1u;
+              if (stamp != cur) acc[y * W + x] = (cur << 6) | next;
+            } else {
+              next = stamp == cur ? run : 0u;
+            }
+            held = next >= DF_HUD_PAIRS;
           }
-          held = loose && run >= DF_HUD_PAIRS;
         }
         if (held || (dis > pc.p.y && most * 1000.0 < float(pc.c.y))) {
           ca = here_a;

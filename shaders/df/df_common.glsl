@@ -57,7 +57,13 @@ layout(constant_id = 1) const int DF_OPTS = 0;
 // Exact standalone-product optimizations: 1 direct args, 2 grouped cut,
 // 4 lazy sharp colour, 8 identity cleanup stores, 16 texture-only fine flow.
 // DenseFlowSource consumers leave these off, retaining their FP32 flow buffer.
+// RZ+ (2026-11-20): 32 the camera's shift as a start of the patch search (df_cam.comp), 64 the HUD hold (df_final.comp).
 layout(constant_id = 2) const int DF_PRODUCT_OPTS = 0;
+// RZ+: the camera search's reach on the coarsest level, in its pixels (+-12 on a ~40 px wide level is about +-380 px at 1280).
+#define DF_CAM_R 12
+// RZ+ HUD hold: a pixel within DF_HUD_BAR in place, with texture, for DF_HUD_PAIRS pairs in a row is the screen.
+#define DF_HUD_PAIRS 6u
+#define DF_HUD_BAR 0.06
 #ifndef DF_LEVEL_SIZE
 #define DF_LEVEL_SIZE(T) textureSize(T, 0)
 #endif

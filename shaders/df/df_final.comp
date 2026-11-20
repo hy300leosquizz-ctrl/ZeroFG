@@ -16,6 +16,9 @@ layout(local_size_x = 8, local_size_y = 8) in;
 const vec2 CAND[9] = vec2[9](vec2(8, 0), vec2(-8, 0), vec2(0, 8), vec2(0, -8), vec2(16, 0), vec2(-16, 0), vec2(0, 16), vec2(0, -16), vec2(0, 0));
 
 // The A/B luma disagreement of the midpoint motion t at (x, y) over a plus of five taps two pixels apart (0..255 per tap).
+// The mean absolute difference of two colours (Zero's l1, rc7_common.glsl), for the HUD hold's texture test.
+float hud_l1(vec3 a, vec3 b) { vec3 d = abs(a - b); return (d.x + d.y + d.z) / 3.0; }
+
 float sym_sad5(vec2 t, float x, float y) {
   const vec3 L = vec3(0.299, 0.587, 0.114);
   float s = 0.0;
@@ -110,9 +113,36 @@ void main() {
       // The place rule discards the warped sharp colours. Decide that same
       // rule first; retain all error, weight and blend arithmetic below.
       bool place = false;
-      if ((DF_OPTS & 4096) != 0 && dis > pc.p.y) {
+      // RZ+ HUD hold (DF_PRODUCT_OPTS bit 6, lab hudmem=3, 2026-11-20, after Zero's screen memory): a pixel that stayed within DF_HUD_BAR
+      // in place, with texture (it stands out from 3 px away), for DF_HUD_PAIRS pairs in a row is the screen and stays in place even where
+      // the moving samples agree. A fast pan dragged Arkham's prompts across the middle picture; the HUD boxes gain 0.26 - 0.37 dB with no
+      // pair lost on five clips. The loose bar: the clips are screen recordings, and a static letter over a moving background changes by
+      // more than 2 % from the codec alone; the texture keeps dark flat walls out. Each pixel's run lives in acc[] (its own word only);
+      // pc.c.z = 1 on the pair's first picture advances it, the other phases of the pair (MFG) only read it.
+      const bool hud = (DF_PRODUCT_OPTS & 64) != 0;
+      if ((DF_OPTS & 4096) != 0 && (dis > pc.p.y || hud)) {
         vec3 here_a = texelFetch(realA, ivec2(x, y), 0).rgb, here_b = texelFetch(realB, ivec2(x, y), 0).rgb, differ = abs(here_a - here_b);
-        if (max(differ.x, max(differ.y, differ.z)) * 1000.0 < float(pc.c.y)) {
+        float most = max(differ.x, max(differ.y, differ.z));
+        bool held = false;
+        if (hud) {
+          // The cheap test first: most moving pixels differ in place and never fetch the four texture taps. The run is written only when
+          // it changes (the lab's form, every pixel reading four taps and writing a 16-byte-strided word, cost 2.8 ms on the S20).
+          bool loose = most < DF_HUD_BAR;
+          if (loose) {
+            ivec2 xy = ivec2(x, y), top = ivec2(W - 1, H - 1);
+            float stands = max(max(hud_l1(here_a, texelFetch(realA, clamp(xy + ivec2(3, 0), ivec2(0), top), 0).rgb), hud_l1(here_a, texelFetch(realA, clamp(xy - ivec2(3, 0), ivec2(0), top), 0).rgb)),
+                               max(hud_l1(here_a, texelFetch(realA, clamp(xy + ivec2(0, 3), ivec2(0), top), 0).rgb), hud_l1(here_a, texelFetch(realA, clamp(xy - ivec2(0, 3), ivec2(0), top), 0).rgb)));
+            loose = stands >= 0.05;
+          }
+          uint run = acc[y * W + x];
+          if (pc.c.z != 0) {
+            uint next = loose ? min(run + 1u, 64u) : 0u;
+            if (next != run) acc[y * W + x] = next;
+            run = next;
+          }
+          held = loose && run >= DF_HUD_PAIRS;
+        }
+        if (held || (dis > pc.p.y && most * 1000.0 < float(pc.c.y))) {
           ca = here_a;
           cb = here_b;
           ea = 0.0;

@@ -100,7 +100,7 @@ function(zerofg_compile_shader_in subdir common output_name source_name symbol)
 endfunction()
 
 zerofg_compile_shader_in(rc3 crop.comp rc3_crop crop.comp zerofg_rc3_crop_spv)
-foreach(_df down up patch_sg patch_wg patch_q dense clist cut)
+foreach(_df down up patch_sg patch_wg patch_q dense clist cut cam)
   zerofg_compile_shader_in(df df_common.glsl df_${_df} df_${_df}.comp zerofg_df_${_df}_spv)
 endforeach()
 zerofg_compile_shader_in(df df_common.glsl df_final df_final.comp zerofg_df_final_spv -DZFG_DF_IMAGE_OUT=1)

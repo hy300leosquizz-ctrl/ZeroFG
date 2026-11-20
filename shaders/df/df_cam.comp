@@ -1,0 +1,37 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// df, RZ+ (DF_PRODUCT_OPTS bit 5, laboratory key cam=1, 2026-11-20): the camera's motion as one more start of the patch search. A fast pan
+// moves the whole background together further than the patch search's reach, and RZ crossfaded A and B (Arkham's pans, where Zero's long
+// search won). One workgroup per whole-pixel shift (dx, dy) of the coarsest level within +-DF_CAM_R: the mean absolute luma difference of
+// A against B shifted, over the overlap; the smallest wins through one atomicMax on (~(cost << 10 | shift index)) into c_pad[0] of the
+// cleanup buffer (zeroed before this pass each pair). pc.a = (w, h). The textures of the set are the coarsest level's.
+#define DF_LEVEL_SIZE(T) ivec2(pc.a.x, pc.a.y)
+#include "df_common.glsl"
+layout(local_size_x = 64) in;
+
+shared vec2 cam_sum[64];
+
+void main() {
+  const int side = 2 * DF_CAM_R + 1;
+  int idx = int(gl_WorkGroupID.x);
+  int dx = idx % side - DF_CAM_R, dy = idx / side - DF_CAM_R;
+  int w = pc.a.x, h = pc.a.y;
+  uint t = gl_LocalInvocationIndex;
+  vec2 s = vec2(0.0);
+  for (int p = int(t); p < w * h; p += 64) {
+    int x = p % w, y = p / w, x2 = x + dx, y2 = y + dy;
+    if (x2 < 0 || y2 < 0 || x2 >= w || y2 >= h) continue;
+    s += vec2(abs(tex_at(false, x, y) - tex_at(true, x2, y2)), 1.0);
+  }
+  cam_sum[t] = s;
+  barrier();
+  for (uint stride = 32u; stride != 0u; stride >>= 1u) {
+    if (t < stride) cam_sum[t] += cam_sum[t + stride];
+    barrier();
+  }
+  if (t != 0u) return;
+  // At least half the picture must overlap: a shift that leaves a sliver could match by chance.
+  if (cam_sum[0].y * 2.0 < float(w * h)) return;
+  uint cost = min(uint(cam_sum[0].x / cam_sum[0].y * 256.0), 0x3fffffu);
+  atomicMax(c_pad[0], ~((cost << 10) | uint(idx)));
+}

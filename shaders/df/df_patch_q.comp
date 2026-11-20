@@ -78,9 +78,19 @@ void main() {
   float det = hs.x * hs.z - hs.y * hs.y;
   float cx = float(x0) + 3.5, cy = float(y0) + 3.5;
   vec2 u0 = flow_bil(fo, w, h, cx, cy);
-  if (pc.p.x != 0.0 || pc.p.y != 0.0) {
+  // RZ+ (DF_PRODUCT_OPTS bit 5, lab cam=1, 2026-11-20): the camera's shift from df_cam.comp is a start on every level; pc.c.w the coarsest
+  // level's width (0: no camera word this pair). A fast pan outruns the search's reach and RZ crossfaded A and B (Arkham 1 +1.25 dB).
+  const bool cam = (DF_PRODUCT_OPTS & 32) != 0 && pc.c.w > 0 && c_pad[0] != 0u;
+  if (pc.p.x != 0.0 || pc.p.y != 0.0 || cam) {
     float best = start_cost(i1b, bx, by, u0, T) * pc.p.w;
     vec2 pick = u0;
+    if (cam) {
+      int k = int(~c_pad[0] & 1023u), side = 2 * DF_CAM_R + 1;
+      vec2 v = vec2(float(k % side - DF_CAM_R), float(k / side - DF_CAM_R)) * (float(w) / float(pc.c.w)) * (d == 0 ? 1.0 : -1.0);
+      float c = start_cost(i1b, bx, by, v, T);
+      pick = c < best ? v : pick;
+      best = c < best ? c : best;
+    }
     if (pc.p.x != 0.0) {
       float c = start_cost(i1b, bx, by, vec2(0.0), T);
       pick = c < best ? vec2(0.0) : pick;

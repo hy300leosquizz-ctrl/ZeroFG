@@ -47,6 +47,10 @@ namespace {
 
 // The laboratory's Eco defaults (2026-10-28).
 constexpr int32_t kPatch = 8, kStride = 4, kIterations = 2;
+// RZ+ (2026-11-20): four Gauss-Newton steps for the product (Zero's base keeps two). The 60 fps set (Spider-Man 2, Uncharted 4, Forza 5,
+// three Arkham Knight clips) gained +0.01 to +0.09 dB with no pair lost; the raycaster's rolling ball +0.8. The search stops when it converges,
+// so the S20's patch search went from 1.20 to 1.25 ms.
+constexpr int32_t kProductIterations = 4;
 constexpr uint32_t kFinest = 1;                    // the flow is solved down to level 1 (half resolution)
 constexpr size_t kMaxLevels = 16;                  // 16384 px halves to the 24 px floor in 10 levels
 constexpr float kSigma = 1.5f;                     // the loop-error weight of the two warps
@@ -810,7 +814,7 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
       Push patch;
       patch.a[0] = int32_t(L.w); patch.a[1] = int32_t(L.h);
       patch.b[0] = int32_t(L.nx); patch.b[1] = int32_t(L.ny); patch.b[2] = L.flow0; patch.b[3] = kPatch;
-      patch.c[0] = kStride; patch.c[1] = kIterations; patch.c[2] = 1;
+      patch.c[0] = kStride; patch.c[1] = product_ ? kProductIterations : kIterations; patch.c[2] = 1;
       if (starts_ && l <= int(finest_) + kStartLevels) {
         patch.p[0] = 1.0f;
         patch.p[1] = have_last_ ? 1.0f : 0.0f;

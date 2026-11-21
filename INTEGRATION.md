@@ -156,7 +156,10 @@ status = zerofg->Interpolate(command_buffer, frame_context_index,
 The HUD that is the same in both frames and that both pairs of planes explain
 is lifted off them, the frame is generated without it, and the later frame's
 HUD is put back on exactly those pixels. A HUD that moves or changes stays in
-the frames, and Zero holds it in place where it can. Planes may sit anywhere in
+the frames, and the engine's own HUD hold keeps it in place where it can. Since
+1.2g (`GIT_TAG v1.2g`) the planes work at every phase: give the same planes to
+every phase of a pair (x3, x4) and only the first one takes the HUD out; the
+others reuse it. Planes may sit anywhere in
 their images (their own `active_rect`), in any sampled colour format; the frames
 must be `A2B10G10R10_UNORM_PACK32`. A missing plane, or one that does not fit,
 makes the call exactly the one without planes: the HUD path never fails a

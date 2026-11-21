@@ -50,6 +50,14 @@ frames in between along that motion.
   War 3 at x4 on the Adreno 840 averaged 74.7 ms from the game's frame to the
   screen, with the display moving between 120, 90 and 60 Hz.
 
+**1.2g** is 1.2 for hosts that see how the game draws its HUD (ARMSX2's
+ZeroGS, from the PS2's GS): the HUD layer (`HudPlanes`) now runs on every
+generated frame of x2, x3 and x4. The first frame of a pair takes the still
+HUD out of both real frames; the others reuse it and only put it back. On the
+Adreno 840 that is 5-15 % at x2 and 1-3 % for a whole x4 pair, for up to
+1.4 dB more on the HUD where the camera moves under it. Without HUD planes it
+is 1.2.0, frame for frame.
+
 ## How 1.2 compares
 
 ### 30 -> 60, the real case

@@ -14,7 +14,7 @@ class Adapter {
   static std::unique_ptr<Adapter> Create(
       const VulkanContext& vulkan, uint32_t frame_context_count,
       Mode mode, Backend backend, const Capabilities& capabilities,
-      Status* status = nullptr);
+      Status* status = nullptr, uint32_t zero_options = 0);
 
   ~Adapter();
 

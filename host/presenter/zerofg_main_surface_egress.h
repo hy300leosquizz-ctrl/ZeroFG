@@ -80,7 +80,8 @@ class ZeroFGMainSurfaceProducer {
 // back as a completion once the copy that read it has finished.
 class ZeroFGMainSurfaceEgress {
  public:
-  static constexpr uint32_t kMaxSlots = 8;
+  // The presenter's FinalOutput pool: 2 N + 1 (9 at the MFG ceiling of 4). One slot per FinalOutput, so it must hold all of them.
+  static constexpr uint32_t kMaxSlots = 9;
 
   enum class Failure : uint32_t {
     kNone,
@@ -107,6 +108,14 @@ class ZeroFGMainSurfaceEgress {
     uint32_t slot = UINT32_MAX;
     uint64_t sequence_id = 0;
     bool synthetic = false;
+    // Observation only. The exact Source IssueSwap stamp is carried to the
+    // matching GOOGLE display timing. A Synthetic's stamp belongs to B, so
+    // only Real requests enter the issue-to-shown latency distribution.
+    uint64_t source_id = 0;
+    uint64_t issue_time_ns = 0;
+    // Captured from the bound engine, not a later UI request: 1=RZ, 2=Zero.
+    uint32_t latency_mode = 0;
+    uint64_t latency_generation = 0;
     // A "not before" time, never a ratchet: FIFO shows at most one image per
     // vertical blank, and the actual time only ever feeds telemetry.
     uint64_t desired_present_ns = 0;
@@ -243,6 +252,11 @@ class ZeroFGMainSurfaceEgress {
     uint64_t vsync_phase_reanchor = 0;
     uint64_t vsync_duplicate_refused = 0;
     uint64_t vsync_gap_absorbed = 0;
+    // zerofg_vsync_retire: whether it is on, and the synthetics retired (with
+    // the phase pushed, and without: two outputs in a row behind).
+    bool vsync_retire = false;
+    uint64_t vsync_retired = 0;
+    uint64_t vsync_retired_unpushed = 0;
     int64_t ready_before_vsync_p10_ns = 0;
     int64_t ready_before_vsync_p50_ns = 0;
     int64_t ready_before_vsync_p90_ns = 0;
@@ -268,7 +282,7 @@ class ZeroFGMainSurfaceEgress {
                           VkFormat format, uint32_t slot_count,
                           bool elevated_priority, bool apocalypse_guard,
                           bool free_output, bool vsync_quantizer,
-                          bool vsync_tight_reach,
+                          bool vsync_tight_reach, bool vsync_retire,
                           std::function<void()> wake_owner);
   ZeroFGMainSurfaceEgress(const ZeroFGMainSurfaceEgress&) = delete;
   ZeroFGMainSurfaceEgress& operator=(const ZeroFGMainSurfaceEgress&) = delete;
@@ -340,6 +354,8 @@ class ZeroFGMainSurfaceEgress {
     uint32_t present_id = 0;
     uint64_t sequence_id = 0;
     bool synthetic = false;
+    uint64_t source_id = 0;
+    uint64_t issue_time_ns = 0;
     uint64_t desired_ns = 0;
     uint64_t present_ns = 0;
     uint64_t ready_ns = 0;
@@ -348,6 +364,30 @@ class ZeroFGMainSurfaceEgress {
     // zerofg_vsync_tight_reach: a vsync only the two-deadline reach allowed.
     bool tight_only = false;
   };
+
+  // Exact, non-overlapping observation batches. Bounded even if a driver
+  // returns invalid timestamps or the guest runs faster than the phone.
+  struct LatencyBatch {
+    static constexpr size_t kCapacity = 1024;
+    std::array<uint64_t, kCapacity> samples_ns = {};
+    size_t samples = 0;
+    uint64_t overflow = 0;
+    uint64_t invalid = 0;
+    uint64_t order_errors = 0;
+    uint64_t real_missing = 0;
+    uint64_t real_overtaken = 0;
+    uint64_t real_timed = 0;
+    uint64_t synthetic_timed = 0;
+    uint64_t source_first = 0;
+    uint64_t source_last = 0;
+    uint64_t issue_first_ns = 0;
+    uint64_t issue_last_ns = 0;
+    uint64_t shown_first_ns = 0;
+    uint64_t shown_last_ns = 0;
+  };
+  void ObserveRealLatency(const TimingRecord& record, uint64_t actual_ns,
+                          uint64_t now_ns);
+  void MaybeLogLatencyBatch(uint64_t now_ns, bool force = false);
 
   static constexpr size_t kTimingRecordCount = 64;
   // Signed samples live in the unsigned windows offset by one second.
@@ -391,6 +431,17 @@ class ZeroFGMainSurfaceEgress {
   // assigned_ns (0 and the logical target when the lattice is not known yet).
   uint64_t QuantizeToVsync(uint64_t target_ns, uint64_t now_ns,
                            uint64_t& assigned_ns);
+  // zerofg_vsync_retire (the owner 2026-11-19, the latency wells of x4 at 30
+  // on 120 Hz): true when this output is a synthetic whose own vsync the
+  // previous present already has while the quantizer's phase is pushed late
+  // (or for the second output in a row): the egress then drops it unshown and
+  // sheds one refresh of phase, so the display steps one tick back towards
+  // its schedule. Every vsync already has an output whenever N x the game's
+  // rate equals the refresh (x4 30 on 120 Hz, x3 on 90, x2 30 on 60), so the
+  // quantizer never finds the free vsync it sheds a phase into, and a pushed
+  // phase became latency for good. A single late S right before its R is
+  // still absorbed as before. Reals are never retired.
+  bool RetireBehindSynthetic(const Request& request);
   // The compositor latches a buffer for vsync V about one refresh before V
   // (shown frames were displayed 8.5-14 ms after ready, 2026-10-07): a slot is
   // reachable when the copy is predicted ready one refresh plus this margin
@@ -493,6 +544,10 @@ class ZeroFGMainSurfaceEgress {
   // switch it off; the window toward that, and whether the present
   // QuantizeToVsync just placed got a slot only the tight reach allowed.
   std::atomic<bool> tight_reach_;
+  // zerofg_vsync_retire (RetireBehindSynthetic) and the outputs in a row whose
+  // own vsync the previous present already had.
+  const bool vsync_retire_;
+  uint32_t vsync_behind_streak_ = 0;
   uint32_t tight_reach_window_presents_ = 0;
   uint32_t tight_reach_window_late_ = 0;
   bool last_quantize_tight_only_ = false;
@@ -528,6 +583,16 @@ class ZeroFGMainSurfaceEgress {
   std::array<TimingRecord, kTimingRecordCount> timing_records_ = {};
   size_t timing_record_next_ = 0;
   uint64_t last_actual_ns_ = 0;
+  // Egress-thread-only telemetry; never consulted by pacing or admission.
+  uint32_t latency_mode_ = 0;
+  uint64_t latency_generation_ = 0;
+  uint64_t latency_window_start_ns_ = 0;
+  uint64_t latency_last_source_id_ = 0;
+  uint64_t latency_last_issue_ns_ = 0;
+  uint64_t latency_last_shown_ns_ = 0;
+  uint64_t latency_last_unmatched_ = 0;
+  uint64_t latency_last_query_errors_ = 0;
+  LatencyBatch latency_batch_;
   // Upper bound of the last present's display time, for the shaper (0: none).
   uint64_t shaper_latest_display_ns_ = 0;
   // The shaper's degradation latch, under stats_mutex_: the open 1 s window of

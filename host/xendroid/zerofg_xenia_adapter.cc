@@ -6,13 +6,15 @@ namespace zerofg::xenia {
 
 std::unique_ptr<Adapter> Adapter::Create(
     const VulkanContext& vulkan, uint32_t frame_context_count, Mode mode,
-    Backend backend, const Capabilities& capabilities, Status* status) {
+    Backend backend, const Capabilities& capabilities, Status* status,
+    uint32_t zero_options) {
   CreateInfo create_info;
   create_info.vulkan = vulkan;
   create_info.frame_context_count = frame_context_count;
   create_info.mode = mode;
   create_info.backend = backend;
   create_info.capabilities = capabilities;
+  create_info.zero_options = zero_options;
 
   std::unique_ptr<Interpolator> interpolator =
       Interpolator::Create(create_info, status);

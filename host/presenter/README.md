@@ -3,7 +3,7 @@
 The engine makes frames; the presenter turns that into frame generation. It
 decides which real frames to keep, when to generate, when each output is shown,
 and in what order, and it carries every frame from the game's GPU device to the
-screen, on ZeroFG's own Vulkan device. About 25,000 lines, Android.
+screen, on ZeroFG's own Vulkan device. About 26,000 lines, Android.
 
 It builds in any Android host through [`../portable/`](../portable/), which
 stands in for the few Xenia-shaped types it includes. Two hosts run it:
@@ -20,7 +20,7 @@ for real.
 | `zerofg_device_handoff.h/.inc` | Moving each real frame from the game's Vulkan device to ZeroFG's (Android hardware buffers and sync files) |
 | `zerofg_completion_owner.h` | Proving GPU completion without ever blocking (timelines and sync files) |
 | `zerofg_build_guard.h` | Surviving a driver that crashes compiling ZeroFG's pipelines: a marker around each build, Compat at the next launch, off after a second crash, per driver and app build |
-| `zerofg_config.h` | The user settings (mode: off, zero, reallyzero; the game frame rate cap) and the flag that says the presenter is live, which a host's guest pacing reads |
+| `zerofg_config.h` | The user settings (mode: off or on; the multiplier x2, x3 or x4; the game frame rate cap) and the flag that says the presenter is live, which a host's guest pacing reads |
 
 ## How it is driven
 

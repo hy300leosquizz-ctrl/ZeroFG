@@ -20,7 +20,7 @@ never submits, never waits and never presents.
 include(FetchContent)
 FetchContent_Declare(zerofg
   GIT_REPOSITORY https://github.com/hy300leosquizz-ctrl/ZeroFG.git
-  GIT_TAG v1.1.0)
+  GIT_TAG v1.2.0)
 FetchContent_MakeAvailable(zerofg)
 target_link_libraries(my_host PRIVATE zerofg::zerofg)
 ```
@@ -38,7 +38,7 @@ info.vulkan.instance = instance;
 info.vulkan.physical_device = physical_device;
 info.vulkan.device = device;
 info.vulkan.get_instance_proc_addr = vkGetInstanceProcAddr;  // your loader's
-info.mode = zerofg::Mode::kZero;          // the quality engine; kReallyZero, the economy one
+info.mode = zerofg::Mode::kReallyZero;    // the engine (kZero: 1.1's layered engine)
 info.backend = zerofg::Backend::kAuto;    // the fast paths the device has
 info.frame_context_count = 3;             // 1..8, see section 4
 info.capabilities = capabilities;         // see section 2
@@ -113,7 +113,12 @@ inputs in the layout you declare (`SHADER_READ_ONLY_OPTIMAL` or `GENERAL`).
 It moves the output to its own working layout and back, so the output ends in
 the layout you declared.
 
-- **Phase.** Only `0.5` (the midpoint) is supported.
+- **Phase.** Any phase strictly between 0 and 1: `0.5` for x2, `1/3` and
+  `2/3` for x3, `0.25`, `0.5` and `0.75` for x4. Record the phases of one pair
+  one after another, before the next pair, each with its own frame context
+  (`frame_context_count` at least N + 1 for xN), and keep both real frames
+  alive until the last one completes. The calls after the first only record
+  what depends on the phase.
 - **Frame contexts.** `frame_context_index` picks one of the
   `frame_context_count` independent sets of working resources. Do not reuse an
   index until the submission that last used it has completed on the GPU. With
@@ -127,9 +132,10 @@ the layout you declared.
   the new pair starts on the frame the previous pair ended on. After a gap, a
   seek, a pause or a resolution change, it simply starts fresh. Feeding
   consecutive pairs (A→B, B→C, C→D) gives the best result and the lowest cost.
-- **Scene cuts.** Both engines notice a cut (the two frames have little in
-  common where they sit) and show the later frame whole instead of a blend of
-  two scenes.
+- **Scene cuts.** ZeroFG notices a cut (the two frames have little in
+  common where they sit) and shows the later frame whole instead of a blend of
+  two scenes; a wipe or a fade, where what is lit in both still matches, is
+  interpolated.
 
 ## 4b. The HUD (optional)
 

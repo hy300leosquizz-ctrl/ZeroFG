@@ -36,8 +36,17 @@ class ZeroFGIndependentPresenter final {
   static constexpr uint32_t kRealResidencyCapacity = 6;
   static constexpr uint32_t kCapturePoolSize = 4;
   static constexpr uint32_t kPoolSize = kRealResidencyCapacity;
-  static constexpr uint32_t kSyntheticPoolSize = 3;
-  static constexpr uint32_t kFinalOutputPoolSize = 5;
+  // MFG (ZeroFG-DEV MFG_DESIGN_2026-11.md, section 3): the most outputs per pair, one Real and N - 1 generated. A compile-time ceiling:
+  // every published build keeps 2, and with 2 every pool below is today's number and a pair's frames are one. An internal build sets 4.
+#ifndef ZEROFG_MFG_MAX_N
+// Branch zerofg-mfg (internal test builds, never published): 4. Published builds keep 2 until T2 and T4 pass (MFG_DESIGN 3.7).
+#define ZEROFG_MFG_MAX_N 4
+#endif
+  static constexpr uint32_t kZeroFGMfgMaxN = ZEROFG_MFG_MAX_N;
+  static_assert(kZeroFGMfgMaxN >= 2 && kZeroFGMfgMaxN <= 4);
+  // Two pairs of generated frames in flight and one more (3 at x2, 7 at x4); two pairs of outputs and one more (5 at x2, 9 at x4).
+  static constexpr uint32_t kSyntheticPoolSize = 2 * (kZeroFGMfgMaxN - 1) + 1;
+  static constexpr uint32_t kFinalOutputPoolSize = 2 * kZeroFGMfgMaxN + 1;
   static constexpr uint32_t kMailboxCount = 3;
 
   using PaintConfigProvider =
@@ -67,6 +76,11 @@ class ZeroFGIndependentPresenter final {
     // An admitted S owns its q0 submit opportunity until acquired or until
     // Source/lifecycle state revokes that authority.
     std::function<bool()> queue_commit_allowed;
+    // MFG: this frame's place in its pair, frame_index / frame_count between A (0) and B (1). x2 is always 1 of 2, the middle. The frames
+    // of one pair carry the same source ids, so the engine records the pair's work once (ZeroFG's same-pair contract).
+    float phase = 0.5f;
+    uint32_t frame_index = 1;
+    uint32_t frame_count = 2;
   };
 
   // Opaque integration view of one coherently acquired GuestOutput mailbox
@@ -338,7 +352,10 @@ class ZeroFGIndependentPresenter final {
   // destroyed here) by Main Surface Authority; ignored otherwise.
   bool Connect(void* native_window, VkExtent2D extent,
                VkFormat final_output_format,
-               VkSurfaceKHR main_surface = VK_NULL_HANDLE);
+               VkSurfaceKHR main_surface = VK_NULL_HANDLE,
+               // Bound engine for this connection: 0=unknown, 1=RZ, 2=Zero.
+               // The Impl persists across hot-swap, so not a Create property.
+               uint32_t latency_mode = 0);
   void BeginSurfaceDisconnect();
   void DestroySurfaceResourcesAfterSourceIdle();
 

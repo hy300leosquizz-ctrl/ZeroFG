@@ -40,8 +40,16 @@ VulkanPresenter::ZeroFGPresenterVulkanContext::~ZeroFGPresenterVulkanContext() {
 }
 
 bool VulkanPresenter::InitializeZeroFGDeviceContext() {
-  if (!IsZeroFGRequested()) return true;
   auto& context = *zerofg_vulkan_context_;
+  if (context.owned_device) {
+    // A failed setup may already own samplers and pipelines referring to B.
+    // Keep that device alive until normal presenter teardown; replacing it
+    // here would destroy B before those wrappers release their Vulkan objects.
+    if (context.handoff) return !context.handoff->failed();
+    XELOGW("ZeroFGDeviceSplit partial_initialization_failed fallback=native_A "
+           "retry_requires_presenter_teardown=true");
+    return false;
+  }
   // Main Surface Authority needs B with WSI. If that profile cannot be
   // created, ZeroFG stays off and A presents.
   ZeroFGBackendFeatureRequests backend_requests;
@@ -237,11 +245,43 @@ bool VulkanPresenter::InitializeZeroFGDeviceContext() {
             sizeof(shaders::guest_output_sgsr_ps);
         shader_module_create_info.pCode = shaders::guest_output_sgsr_ps;
         break;
+      case GuestOutputPaintEffect::kSgsrDither:
+        shader_module_create_info.codeSize =
+            sizeof(shaders::guest_output_sgsr_dither_ps);
+        shader_module_create_info.pCode = shaders::guest_output_sgsr_dither_ps;
+        break;
       case GuestOutputPaintEffect::kSgsrEdgeDirection:
         shader_module_create_info.codeSize =
             sizeof(shaders::guest_output_sgsr_edge_direction_ps);
         shader_module_create_info.pCode =
             shaders::guest_output_sgsr_edge_direction_ps;
+        break;
+      case GuestOutputPaintEffect::kSgsrEdgeDirectionDither:
+        shader_module_create_info.codeSize =
+            sizeof(shaders::guest_output_sgsr_edge_direction_dither_ps);
+        shader_module_create_info.pCode =
+            shaders::guest_output_sgsr_edge_direction_dither_ps;
+        break;
+      case GuestOutputPaintEffect::kLanczos:
+        shader_module_create_info.codeSize =
+            sizeof(shaders::guest_output_lanczos_ps);
+        shader_module_create_info.pCode = shaders::guest_output_lanczos_ps;
+        break;
+      case GuestOutputPaintEffect::kLanczosDither:
+        shader_module_create_info.codeSize =
+            sizeof(shaders::guest_output_lanczos_dither_ps);
+        shader_module_create_info.pCode =
+            shaders::guest_output_lanczos_dither_ps;
+        break;
+      case GuestOutputPaintEffect::kCrt:
+        shader_module_create_info.codeSize =
+            sizeof(shaders::guest_output_crt_ps);
+        shader_module_create_info.pCode = shaders::guest_output_crt_ps;
+        break;
+      case GuestOutputPaintEffect::kCrtDither:
+        shader_module_create_info.codeSize =
+            sizeof(shaders::guest_output_crt_dither_ps);
+        shader_module_create_info.pCode = shaders::guest_output_crt_dither_ps;
         break;
       default:
         // Not supported by this implementation.

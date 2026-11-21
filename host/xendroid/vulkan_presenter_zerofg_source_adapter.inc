@@ -59,8 +59,10 @@ bool VulkanPresenter::OnGuestOutputPublished(
     uint32_t mailbox_index, bool guest_output_active, uint64_t source_id,
     uint64_t issue_time_ns, uint64_t publish_time_ns,
     const GuestOutputProperties& properties) {
-  if (!guest_output_active || !zerofg_independent_presenter_ ||
-      !zerofg_independent_presenter_->accepting()) {
+  auto* presenter = zerofg_source_presenter_.load(std::memory_order_acquire);
+  if (GetZeroFGSelection() != zerofg_bound_selection_.load(std::memory_order_acquire))
+    RequestUIThreadPaintFromExternalThread();
+  if (!guest_output_active || !presenter || !presenter->accepting()) {
     return false;
   }
   if (zerofg_vulkan_context_->handoff) {
@@ -73,17 +75,18 @@ bool VulkanPresenter::OnGuestOutputPublished(
     metadata.is_8bpc = properties.is_8bpc;
     metadata.publication = properties.source_publication;
     zerofg_vulkan_context_->handoff->Publish(
-        mailbox_index, metadata, zerofg_independent_presenter_.get());
+        mailbox_index, metadata, presenter);
     // Authority is not acceptance. Even a skipped publication wakes B to
     // prepare the requested extent, without forcing Source through native WSI.
   }
-  zerofg_independent_presenter_->ClaimPublicationAuthority();
+  presenter->ClaimPublicationAuthority();
   return true;
 }
 
 void VulkanPresenter::OnGuestOutputPublicationCommitted() {
-  if (zerofg_independent_presenter_) {
-    zerofg_independent_presenter_->PublicationCommitted();
+  auto* presenter = zerofg_source_presenter_.load(std::memory_order_acquire);
+  if (presenter) {
+    presenter->PublicationCommitted();
     return;
   }
 }

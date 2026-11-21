@@ -1028,7 +1028,21 @@ inline std::atomic<bool>& zerofg_main_surface_active() {
   static std::atomic<bool> v{false};
   return v;
 }
+// vkQueuePresentKHR accepts host submissions asynchronously. This counter does
+// NOT measure display scanout, and may include repaints without a new guest frame.
+inline std::atomic<uint64_t>& host_present_submissions() {
+  static std::atomic<uint64_t> v{0};
+  return v;
+}
 }  // namespace internal
+
+inline void RecordHostPresentSubmission() {
+  internal::host_present_submissions().fetch_add(1, std::memory_order_relaxed);
+}
+
+inline uint64_t GetHostPresentSubmissionCount() {
+  return internal::host_present_submissions().load(std::memory_order_relaxed);
+}
 
 // Main Surface Authority: true while ZeroFG's device B produces into the main
 // Surface. The Android host polls it and holds its display frame-rate vote only

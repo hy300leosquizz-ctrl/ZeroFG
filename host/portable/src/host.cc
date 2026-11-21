@@ -11,6 +11,10 @@
 DEFINE_bool(zerofg_frame_generation, false, "", "ZeroFG");
 DEFINE_string(zerofg_mode, "off", "", "ZeroFG");
 DEFINE_uint32(zerofg_fps_limit, 0, "", "ZeroFG");
+DEFINE_bool(zerofg_guest_vblank_pull, true, "", "ZeroFG");
+// MFG: the most outputs per pair the user allows (2, 3 or 4); the presenter
+// caps it by what the display refresh holds.
+DEFINE_uint32(zerofg_multiplier, 2, "", "ZeroFG");
 // Pacing tools (host/presenter/README.md, "Tuning a host's pacing"). The
 // defaults are the ones measured in play on three hosts; a host changes one
 // only after measuring its own output.
@@ -18,6 +22,10 @@ DEFINE_bool(zerofg_phase_recovery, true, "", "ZeroFG");
 DEFINE_bool(zerofg_free_output, true, "", "ZeroFG");
 DEFINE_bool(zerofg_vsync_quantizer, true, "", "ZeroFG");
 DEFINE_bool(zerofg_vsync_tight_reach, false, "", "ZeroFG");
+DEFINE_bool(zerofg_vsync_retire, false, "", "ZeroFG");
+// No latency wells at one output per refresh (N x the game's rate = the
+// refresh): recoveries anchored at the oldest waiting Real, short pairs.
+DEFINE_bool(zerofg_mfg_tick_retire, true, "", "ZeroFG");
 
 namespace zerofg_host {
 

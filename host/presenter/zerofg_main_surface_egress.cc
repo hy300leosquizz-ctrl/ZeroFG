@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <limits>
+#include <string>
 #include <utility>
 
 #include "xenia/base/frame_stats.h"
@@ -165,7 +166,7 @@ ZeroFGMainSurfaceEgress::ZeroFGMainSurfaceEgress(
     VkSurfaceKHR surface, VkExtent2D extent, VkFormat format,
     uint32_t slot_count, bool elevated_priority, bool apocalypse_guard,
     bool free_output, bool vsync_quantizer, bool vsync_tight_reach,
-    std::function<void()> wake_owner)
+    bool vsync_retire, std::function<void()> wake_owner)
     : device_(device),
       producer_(producer),
       surface_(surface),
@@ -181,8 +182,11 @@ ZeroFGMainSurfaceEgress::ZeroFGMainSurfaceEgress(
       apocalypse_guard_(apocalypse_guard && timing_available_),
       free_output_(free_output),
       vsync_quantizer_(vsync_quantizer && timing_available_),
-      tight_reach_(vsync_tight_reach) {
+      tight_reach_(vsync_tight_reach),
+      vsync_retire_(vsync_retire && free_output && vsync_quantizer &&
+                    timing_available_) {
   counters_.timing_available = timing_available_;
+  counters_.vsync_retire = vsync_retire_;
   counters_.apocalypse_guard = apocalypse_guard_;
   counters_.free_output = free_output_;
   counters_.vsync_quantizer = vsync_quantizer_;
@@ -444,6 +448,10 @@ void ZeroFGMainSurfaceEgress::ThreadMain() {
     wake_owner_();
   }
   Serve();
+  // Query only what the driver already knows; never wait for scanout. A final
+  // partial batch is explicitly marked incomplete for the offline comparison.
+  MaybePollTimings(true);
+  MaybeLogLatencyBatch(EgressMonotonicTimeNs(), true);
 #endif
 }
 
@@ -722,6 +730,10 @@ void ZeroFGMainSurfaceEgress::Serve() {
       DropUnpresented(superseded[i], true);
     }
     superseded_count = 0;
+    if (vsync_retire_ && RetireBehindSynthetic(request)) {
+      DropUnpresented(request, true);
+      continue;
+    }
     bool probe = false;
     if (free_output_ && !PaceFreePresent(request, probe)) {
       Abandon(request);
@@ -1031,6 +1043,7 @@ bool ZeroFGMainSurfaceEgress::ServeRequest(const Request& request,
     if (present_result == VK_SUCCESS ||
         present_result == VK_SUBOPTIMAL_KHR) {
       presented = true;
+      xe::RecordHostPresentSubmission();
       if (present_result == VK_SUBOPTIMAL_KHR) {
         std::lock_guard<std::mutex> lock(stats_mutex_);
         ++counters_.suboptimal;
@@ -1054,17 +1067,31 @@ bool ZeroFGMainSurfaceEgress::ServeRequest(const Request& request,
   }
   if (presented) {
     std::lock_guard<std::mutex> lock(stats_mutex_);
+    if (!latency_window_start_ns_) {
+      latency_window_start_ns_ = EgressMonotonicTimeNs();
+      latency_mode_ = request.latency_mode;
+      latency_generation_ = request.latency_generation;
+    }
+    if (latency_mode_ != request.latency_mode ||
+        latency_generation_ != request.latency_generation) {
+      ++latency_batch_.invalid;
+    }
     TimingRecord& record = timing_records_[timing_record_next_];
     if (timing_available_ && record.used && !record.resolved) {
       // Android keeps a short timing history; a record overwritten before
       // its timing came back is counted, never invented.
       ++counters_.timings_missing;
+      if (!record.synthetic) {
+        ++latency_batch_.real_missing;
+      }
     }
     record.used = true;
     record.resolved = false;
     record.present_id = uint32_t(request.sequence_id);
     record.sequence_id = request.sequence_id;
     record.synthetic = request.synthetic;
+    record.source_id = request.source_id;
+    record.issue_time_ns = request.issue_time_ns;
     record.desired_ns = request.desired_present_ns;
     record.present_ns = present_ns;
     record.ready_ns = 0;
@@ -1615,6 +1642,76 @@ uint64_t ZeroFGMainSurfaceEgress::QuantizeToVsync(uint64_t target_ns,
   return slot_ns - period_ns / 2;
 }
 
+bool ZeroFGMainSurfaceEgress::RetireBehindSynthetic(const Request& request) {
+  // The quantizer's own state, on this thread: the same lattice QuantizeToVsync
+  // will place this output on. Not while a limiter paces the presents (the
+  // quantizer then is not what decides) or before the lattice is known.
+  if (limiter_period_ns_ || limiter_block_streak_ || !vsync_anchor_ns_ ||
+      !vsync_last_slot_ns_) {
+    vsync_behind_streak_ = 0;
+    return false;
+  }
+  uint64_t period_ns = 0;
+  uint64_t copy_ns = 0;
+  {
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+    period_ns = counters_.refresh_cycle_now_ns;
+    if (copy_residence_ns_.count()) {
+      copy_ns = copy_residence_ns_.Quantile(50, 100);
+    }
+  }
+  if (!period_ns) {
+    vsync_behind_streak_ = 0;
+    return false;
+  }
+  const uint64_t anchor_ns = vsync_anchor_ns_;
+  const uint64_t target_ns = request.desired_present_ns;
+  const uint64_t at_or_after_ns =
+      target_ns <= anchor_ns
+          ? anchor_ns - (anchor_ns - target_ns) / period_ns * period_ns
+          : anchor_ns +
+                (target_ns - anchor_ns + period_ns - 1) / period_ns * period_ns;
+  const uint64_t slot_ns = at_or_after_ns + vsync_offset_periods_ * period_ns;
+  // Behind: the vsync this output's tick maps to is the previous present's,
+  // or an earlier one; QuantizeToVsync would push it to the next.
+  if (slot_ns >= vsync_last_slot_ns_ + period_ns / 2) {
+    vsync_behind_streak_ = 0;
+    return false;
+  }
+  ++vsync_behind_streak_;
+  const bool pushed = vsync_offset_periods_ != 0;
+  if (!request.synthetic || (!pushed && vsync_behind_streak_ < 2)) {
+    return false;
+  }
+  // Only a schedule that is late, not a copy that is: the vsync this output
+  // leaves free must be within the next output's reach with a refresh to
+  // spare (QuantizeToVsync's sum reach), else the next one would push the
+  // phase forward again and the dropped frame would buy nothing.
+  const uint64_t now_ns = EgressMonotonicTimeNs();
+  const uint64_t reach_target_ns =
+      now_ns + copy_ns + period_ns + kVsyncLatchMarginNs;
+  const uint64_t reach_ns =
+      reach_target_ns <= anchor_ns
+          ? anchor_ns - (anchor_ns - reach_target_ns) / period_ns * period_ns
+          : anchor_ns + (reach_target_ns - anchor_ns + period_ns - 1) /
+                            period_ns * period_ns;
+  if (vsync_last_slot_ns_ + period_ns < reach_ns + period_ns) {
+    return false;
+  }
+  if (pushed) {
+    --vsync_offset_periods_;
+  }
+  vsync_behind_streak_ = 0;
+  {
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+    ++counters_.vsync_retired;
+    if (!pushed) {
+      ++counters_.vsync_retired_unpushed;
+    }
+  }
+  return true;
+}
+
 void ZeroFGMainSurfaceEgress::DropUnpresented(const Request& request,
                                               bool superseded) {
   {
@@ -1725,10 +1822,13 @@ void ZeroFGMainSurfaceEgress::PollCopyCompletions() {
 }
 
 void ZeroFGMainSurfaceEgress::MaybePollTimings(bool force) {
+  const uint64_t now_ns = EgressMonotonicTimeNs();
+  // The window partitions observations, not the overlapping SampleWindows in
+  // Stats. Raw batches can therefore be pooled without averaging percentiles.
+  MaybeLogLatencyBatch(now_ns);
   if (!timing_available_ || swapchain_ == VK_NULL_HANDLE) {
     return;
   }
-  const uint64_t now_ns = EgressMonotonicTimeNs();
   if (!force && now_ns < next_timing_poll_ns_) {
     return;
   }
@@ -1758,6 +1858,7 @@ void ZeroFGMainSurfaceEgress::MaybePollTimings(bool force) {
   uint32_t count = uint32_t(timings.size());
   const VkResult result = device_->vkGetPastPresentationTimingGOOGLE()(
       device_->device(), swapchain_, &count, timings.data());
+  const uint64_t timing_observation_ns = EgressMonotonicTimeNs();
   std::lock_guard<std::mutex> lock(stats_mutex_);
   if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
     ++counters_.timing_query_errors;
@@ -1795,11 +1896,19 @@ void ZeroFGMainSurfaceEgress::MaybePollTimings(bool force) {
           int32_t(older.present_id - timing.presentID) < 0) {
         older.resolved = true;
         ++counters_.overtaken;
+        if (!older.synthetic) {
+          ++latency_batch_.real_overtaken;
+        }
       }
     }
     // Observation only: the actual time never moves a target, a floor or
     // the next desired time.
     const uint64_t actual_ns = timing.actualPresentTime;
+    if (record->synthetic) {
+      ++latency_batch_.synthetic_timed;
+    } else {
+      ObserveRealLatency(*record, actual_ns, timing_observation_ns);
+    }
     present_margin_ns_.Add(BiasSigned(int64_t(timing.presentMargin)));
     if (timing.earliestPresentTime && actual_ns >= timing.earliestPresentTime) {
       const uint64_t earliest_gap_ns = actual_ns - timing.earliestPresentTime;
@@ -1877,6 +1986,101 @@ void ZeroFGMainSurfaceEgress::MaybePollTimings(bool force) {
       }
     }
   }
+}
+
+void ZeroFGMainSurfaceEgress::ObserveRealLatency(const TimingRecord& record,
+                                               uint64_t actual_ns,
+                                               uint64_t now_ns) {
+  ++latency_batch_.real_timed;
+  // No publication fallback: Source issue and actual display are the same
+  // event boundaries as the native path. A future actual stamp would also
+  // indicate an unqualified clock domain or driver timestamp.
+  if (!record.source_id || !record.issue_time_ns ||
+      actual_ns <= record.issue_time_ns || actual_ns > now_ns) {
+    ++latency_batch_.invalid;
+    return;
+  }
+  if (latency_last_source_id_ &&
+      (record.source_id <= latency_last_source_id_ ||
+       record.issue_time_ns <= latency_last_issue_ns_ ||
+       actual_ns <= latency_last_shown_ns_)) {
+    ++latency_batch_.order_errors;
+    return;
+  }
+  latency_last_source_id_ = record.source_id;
+  latency_last_issue_ns_ = record.issue_time_ns;
+  latency_last_shown_ns_ = actual_ns;
+  if (latency_batch_.samples == LatencyBatch::kCapacity) {
+    ++latency_batch_.overflow;
+    return;
+  }
+  if (!latency_batch_.samples) {
+    latency_batch_.source_first = record.source_id;
+    latency_batch_.issue_first_ns = record.issue_time_ns;
+    latency_batch_.shown_first_ns = actual_ns;
+  }
+  latency_batch_.source_last = record.source_id;
+  latency_batch_.issue_last_ns = record.issue_time_ns;
+  latency_batch_.shown_last_ns = actual_ns;
+  latency_batch_.samples_ns[latency_batch_.samples++] =
+      actual_ns - record.issue_time_ns;
+}
+
+void ZeroFGMainSurfaceEgress::MaybeLogLatencyBatch(uint64_t now_ns, bool force) {
+  static constexpr uint64_t kWindowNs = 5000000000ull;
+  if (!latency_window_start_ns_ || now_ns < latency_window_start_ns_ ||
+      (!force && now_ns - latency_window_start_ns_ < kWindowNs)) {
+    return;
+  }
+  const bool complete = now_ns - latency_window_start_ns_ >= kWindowNs;
+  const uint64_t unmatched = counters_.timings_unmatched - latency_last_unmatched_;
+  const uint64_t query_errors =
+      counters_.timing_query_errors - latency_last_query_errors_;
+  const bool reliable = timing_available_ && latency_mode_ &&
+      latency_batch_.samples && !latency_batch_.overflow &&
+      !latency_batch_.invalid && !latency_batch_.order_errors &&
+      !latency_batch_.real_missing && !latency_batch_.real_overtaken &&
+      !unmatched && !query_errors;
+  std::array<uint64_t, LatencyBatch::kCapacity> sorted = latency_batch_.samples_ns;
+  std::sort(sorted.begin(), sorted.begin() + latency_batch_.samples);
+  const auto quantile_us = [&](size_t percent) -> uint64_t {
+    if (!latency_batch_.samples) return 0;
+    // Nearest rank, identical to the pooled raw-sample analyzer.
+    const size_t rank = (latency_batch_.samples * percent + 99) / 100;
+    return sorted[std::min(latency_batch_.samples - 1,
+                           rank ? rank - 1 : size_t(0))] / 1000;
+  };
+  std::string samples_us;
+  samples_us.reserve(latency_batch_.samples * 8);
+  for (size_t i = 0; i < latency_batch_.samples; ++i) {
+    if (i) samples_us += ',';
+    samples_us += std::to_string(latency_batch_.samples_ns[i] / 1000);
+  }
+  if (samples_us.empty()) samples_us = "none";
+  const char* mode = latency_mode_ == 1 ? "REALLYZERO"
+                     : latency_mode_ == 2 ? "ZERO" : "UNKNOWN";
+  XELOGI(
+      "ZeroFGLatencyBatch path=zerofg mode={} kind=real generation={} "
+      "window_start_ns={} window_end_ns={} complete={} "
+      "source_first/last={}/{} issue_first/last_ns={}/{} "
+      "shown_first/last_ns={}/{} issue_to_shown_us p50/p90/p99/max={}/{}/{}/{} "
+      "samples={} overflow={} invalid={} order_errors={} missing={} "
+      "overtaken={} real_timed={} synthetic_excluded={} "
+      "timing_available={} unmatched={} query_errors={} reliable={} samples_us={}",
+      mode, latency_generation_, latency_window_start_ns_, now_ns, complete,
+      latency_batch_.source_first, latency_batch_.source_last,
+      latency_batch_.issue_first_ns, latency_batch_.issue_last_ns,
+      latency_batch_.shown_first_ns, latency_batch_.shown_last_ns,
+      quantile_us(50), quantile_us(90), quantile_us(99), quantile_us(100),
+      latency_batch_.samples, latency_batch_.overflow, latency_batch_.invalid,
+      latency_batch_.order_errors, latency_batch_.real_missing,
+      latency_batch_.real_overtaken, latency_batch_.real_timed,
+      latency_batch_.synthetic_timed, timing_available_, unmatched, query_errors,
+      reliable, samples_us);
+  latency_window_start_ns_ = now_ns;
+  latency_last_unmatched_ = counters_.timings_unmatched;
+  latency_last_query_errors_ = counters_.timing_query_errors;
+  latency_batch_ = {};
 }
 
 void ZeroFGMainSurfaceEgress::PushCompletion(const Completion& completion) {

@@ -69,6 +69,7 @@ constexpr bool kBaseClean = ZFG_RC7_BASE_CLEAN != 0;
 // that costs at most this share of the level's flow. The flow is solved on the first level no wider than kFlowMaxWidth, and the loop's limit is for 640 wide and follows the picture.
 constexpr int kStartLevels = 3;
 constexpr float kStartShare = 0.8f;
+constexpr int kCameraFineLevels = 2;  // RZ+: the camera start skips the finest level and the two above it
 constexpr int kCameraShifts = 25 * 25;  // RZ+: the camera search's candidate shifts, (2 DF_CAM_R + 1)^2 (shaders/df/df_common.glsl)
 constexpr uint32_t kFlowMaxWidth = 400;
 constexpr float kLoopAt640 = 1.5f;
@@ -823,7 +824,9 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
       } else if (product_) {
         patch.p[3] = kStartShare;   // RZ+: the camera is the only other start on this level
       }
-      if (product_) patch.c[3] = int32_t(levels_[size_t(top)].w);   // RZ+: the camera's shift is in the coarsest level's pixels
+      // RZ+: the camera's shift (in the coarsest level's pixels) only above the three finest levels: on them a wall the camera explains
+      // carried a thin wire in front of it (raycaster wires -1.6 dB); the coarse levels keep its reach (canonical_extreme +1.7).
+      if (product_ && l > int(finest_) + kCameraFineLevels) patch.c[3] = int32_t(levels_[size_t(top)].w);
       if (use_quad_) {
         Dispatch(cmd, Stage::kPatch, PyramidSet(uint32_t(l)), &patch, sizeof(patch), (L.nx * L.ny + 7) / 8, 1);
         Dispatch(cmd, Stage::kPatch1, PyramidSet(uint32_t(l)), &patch, sizeof(patch), (L.nx * L.ny + 7) / 8, 1);

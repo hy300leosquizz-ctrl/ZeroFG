@@ -64,7 +64,7 @@ layout(constant_id = 2) const int DF_PRODUCT_OPTS = 0;
 #define DF_CAM_R 12
 // RZ+ HUD hold: a pixel within DF_HUD_BAR in place, with texture, for DF_HUD_PAIRS pairs in a row is the screen.
 #define DF_HUD_PAIRS 6u
-#define DF_HUD_BAR 0.06
+#define DF_HUD_BAR 0.01  // a game hands exact frames; the 6 % of the screen recordings held slow motion in place (raycaster katamari -2 dB)
 #ifndef DF_LEVEL_SIZE
 #define DF_LEVEL_SIZE(T) textureSize(T, 0)
 #endif

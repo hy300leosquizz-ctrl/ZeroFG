@@ -143,7 +143,7 @@ class HudLayer::Impl {
   }
 
   Status Record(VkCommandBuffer cmd, const Image& previous, const Image& current, const Interpolator::HudPlanes& previous_hud,
-                const Interpolator::HudPlanes& current_hud, const Image& output, const Generate& generate) {
+                const Interpolator::HudPlanes& current_hud, const Image& output, bool repeat, const Generate& generate) {
     if (!ready_ || cmd == VK_NULL_HANDLE) return Status::kUnsupported;
     const ActiveRect rect = ResolveRect(previous), rect_b = ResolveRect(current);
     const auto usable = [](const Image& image) {
@@ -174,6 +174,22 @@ class HudLayer::Impl {
     }
     const ActiveRect pa = ResolveRect(previous_hud.p), wa = ResolveRect(previous_hud.w);
     const ActiveRect pb = ResolveRect(current_hud.p), wb = ResolveRect(current_hud.w);
+
+    // MFG: another phase of the last recorded pair. Its HUD-free pictures, keep mask and tile list stand (both pictures stay read-only
+    // until the next pair's prep); only the engine's phase and the compose, on this record's own copy of the compose set.
+    if (repeat && pair_ready_) {
+      slot_ = (slot_ + 1) % slots_;
+      BindSampled(kCompose, 0, current_hud.p.view, current_hud.p.layout);
+      BindSampled(kCompose, 1, current_hud.w.view, current_hud.w.layout);
+      BindStorage(kCompose, 2, keep_.view());
+      BindStorage(kCompose, 3, in_place ? output.view : picture_.view());
+      BindBuffer(kCompose, 4, tiles_.buffer());
+      // The first phase's prep may be in an earlier submission: its writes are made visible to this one's reads.
+      MemoryBarrier(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
+                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT);
+      return RecordPicture(cmd, output, in_place, pair_push_, pair_ia_, pair_ib_, true, current, rect_b, generate);
+    }
+    pair_ready_ = false;  // set again only when this record succeeds
 
     // This pair's A is the Real the pair before ended on: the picture made for it then is this pair's A (hud_prep.comp, reuse_a).
     const bool reuse_a = has_b_ && previous.sequence != 0 && previous.sequence == b_identity_.sequence &&
@@ -242,7 +258,21 @@ class HudLayer::Impl {
       ImageBarrier(cmd, image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, kCompute, VK_ACCESS_2_SHADER_WRITE_BIT,
                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_SHADER_READ_BIT);
     }
+    const Status status = RecordPicture(cmd, output, in_place, push, ia, ib, false, current, rect_b, generate);
+    if (status == Status::kSuccess) {
+      pair_ready_ = true;
+      pair_push_ = push;
+      pair_ia_ = ia;
+      pair_ib_ = ib;
+    }
+    return status;
+  }
 
+ private:
+  // The engine on the HUD-free pictures world_[ia], world_[ib] into the output (or the internal picture), then B's HUD back on the kept
+  // pixels of the listed tiles. `repeat`: another phase of the pair the last record prepared.
+  Status RecordPicture(VkCommandBuffer cmd, const Image& output, bool in_place, const HudPush& push, uint32_t ia, uint32_t ib, bool repeat,
+                       const Image& current, const ActiveRect& rect_b, const Generate& generate) {
     // The engine, once, on the HUD-free pictures, into the output (or the internal picture).
     Image world_a{};
     world_a.image = world_[ia].image();
@@ -273,12 +303,14 @@ class HudLayer::Impl {
     screen.width = width_;
     screen.height = height_;
     screen.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    const Status status = generate(world_a, world_b, target, screen);
+    const Status status = generate(world_a, world_b, target, screen, repeat);
     if (status != Status::kSuccess) return status;
     // world_[ib] is current's picture from here on (both images end this record read-only).
-    has_b_ = current.sequence != 0;
-    b_index_ = ib;
-    b_identity_ = {current.sequence, current.width, current.height, current.format, rect_b};
+    if (!repeat) {
+      has_b_ = current.sequence != 0;
+      b_index_ = ib;
+      b_identity_ = {current.sequence, current.width, current.height, current.format, rect_b};
+    }
 
     // B's HUD back on the kept pixels of the listed tiles, in place.
     const VkImage picture = in_place ? output.image : picture_.image();
@@ -317,7 +349,6 @@ class HudLayer::Impl {
     return Status::kSuccess;
   }
 
- private:
   bool HasOptimalFeatures(VkFormat format, VkFormatFeatureFlags features) const {
     VkFormatProperties properties{};
     dispatch_.get_physical_device_format_properties(vulkan_.physical_device, format, &properties);
@@ -458,6 +489,7 @@ class HudLayer::Impl {
     occupancy_.Destroy(vulkan_, dispatch_);
     for (OwnedBuffer& listed : listed_) listed.Destroy(vulkan_, dispatch_);
     has_b_ = false;
+    pair_ready_ = false;
   }
 
   void Destroy() {
@@ -489,6 +521,11 @@ class HudLayer::Impl {
   bool has_b_ = false;                 // world_[b_index_] holds the picture of the Real b_identity_ names
   uint32_t b_index_ = 0;
   RealIdentity b_identity_;
+  // MFG: the last successful record's pair (its HUD-free pictures world_[pair_ia_], world_[pair_ib_], keep mask and tile list), which
+  // another phase of the same pair records on again.
+  bool pair_ready_ = false;
+  HudPush pair_push_{};
+  uint32_t pair_ia_ = 0, pair_ib_ = 1;
   uint32_t width_ = 0, height_ = 0;
   VkFormat input_format_ = VK_FORMAT_UNDEFINED;
   bool ready_ = false;
@@ -509,8 +546,8 @@ Status HudLayer::Resize(uint32_t width, uint32_t height, VkFormat input_format, 
 
 Status HudLayer::Record(VkCommandBuffer command_buffer, const Image& previous, const Image& current,
                         const Interpolator::HudPlanes& previous_hud, const Interpolator::HudPlanes& current_hud, const Image& output,
-                        const Generate& generate) {
-  return impl_->Record(command_buffer, previous, current, previous_hud, current_hud, output, generate);
+                        bool repeat, const Generate& generate) {
+  return impl_->Record(command_buffer, previous, current, previous_hud, current_hud, output, repeat, generate);
 }
 
 }  // namespace zerofg

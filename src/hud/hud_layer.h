@@ -16,16 +16,20 @@ class HudLayer {
  public:
   // `screen`: the HUD as the planes say, at the Reals' size (r8, sampled, GENERAL): 0 no HUD, 0.5 a HUD pixel left in the pictures, 1 a
   // HUD pixel taken out and put back (AlgorithmContext::SetScreenTruth).
-  using Generate = std::function<Status(const Image& previous, const Image& current, const Image& output, const Image& screen)>;
+  // `repeat`: these are the HUD-free pictures of the last record again (MFG: another phase of that pair), so the engine records only what
+  // depends on the phase.
+  using Generate = std::function<Status(const Image& previous, const Image& current, const Image& output, const Image& screen, bool repeat)>;
 
   static std::unique_ptr<HudLayer> Create(const CreateInfo& create_info);
   ~HudLayer();
 
   Status Resize(uint32_t width, uint32_t height, VkFormat input_format, VkFormat output_format);
 
-  // kUnsupported when the planes or the formats do not fit: the caller then generates without the layer.
+  // kUnsupported when the planes or the formats do not fit: the caller then generates without the layer. `repeat`: the caller knows this
+  // is the pair of the layer's last successful record again (MFG, Interpolator::Interpolate): its HUD-free pictures, keep mask and tile
+  // list stand, only the engine's phase and the compose are recorded. Without a last record to repeat it records the pair whole.
   Status Record(VkCommandBuffer command_buffer, const Image& previous, const Image& current, const Interpolator::HudPlanes& previous_hud,
-                const Interpolator::HudPlanes& current_hud, const Image& output, const Generate& generate);
+                const Interpolator::HudPlanes& current_hud, const Image& output, bool repeat, const Generate& generate);
 
   class Impl;
 

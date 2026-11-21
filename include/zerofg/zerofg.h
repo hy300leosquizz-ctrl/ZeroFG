@@ -212,8 +212,9 @@ class Interpolator {
   // makes this exactly the call above: the HUD layer never fails a frame. The
   // engine gets the HUD-free pictures with sequence 0. Zero also hears where
   // the layer left a HUD that stays in place (digits changing on a panel) and
-  // adds it to its own screen, so it never moves pieces of it. The planes are
-  // used at the middle (0.5) only: any other phase is the call above.
+  // adds it to its own screen, so it never moves pieces of it. Every phase
+  // (x2, x3, x4): another phase of the same pair, with the same planes,
+  // reuses the HUD-free pictures and records only what depends on the phase.
   Status Interpolate(VkCommandBuffer command_buffer,
                      uint32_t frame_context_index,
                      const Image& previous,
@@ -240,7 +241,9 @@ class Interpolator {
   VkFormat input_format_ = VK_FORMAT_UNDEFINED, output_format_ = VK_FORMAT_UNDEFINED;
   // The pair of the last successful plain record (MFG: a call with the same pair records only the new phase).
   static bool SameGeometry(const Image& a, const Image& b);
+  void NotePair(bool valid, bool hud, const Image& previous, const Image& current, float phase);
   bool pair_valid_ = false;
+  bool pair_hud_ = false;  // the last record went through the HUD layer (only the layer repeats it)
   uint64_t pair_previous_ = 0, pair_current_ = 0;
   float pair_phase_ = 0.5f;
   Image pair_geometry_[2];

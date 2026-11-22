@@ -1888,6 +1888,13 @@ void ZeroFGMainSurfaceEgress::MaybePollTimings(bool force) {
     }
     record->resolved = true;
     ++counters_.timings_returned;
+    // What reached the display (xe::RecordHostPresentDisplayed): a real scanout
+    // time, and a refresh of its own.
+    if (timing.actualPresentTime && timing.actualPresentTime != UINT64_MAX &&
+        timing.actualPresentTime != last_displayed_actual_ns_) {
+      last_displayed_actual_ns_ = timing.actualPresentTime;
+      xe::RecordHostPresentDisplayed();
+    }
     // Android reports timings in present order and discards older entries
     // that are still pending once a later one is ready: those will never be
     // reported, most likely dropped by the compositor.

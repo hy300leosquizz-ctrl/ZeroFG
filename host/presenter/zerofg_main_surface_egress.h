@@ -624,6 +624,8 @@ class ZeroFGMainSurfaceEgress {
 
   mutable std::mutex stats_mutex_;
   Stats counters_;
+  // The last scanout counted as displayed (xe::RecordHostPresentDisplayed).
+  uint64_t last_displayed_actual_ns_ = 0;
   SampleWindow<128> actual_interval_ns_;
   SampleWindow<128> desired_to_actual_ns_;
   SampleWindow<128> acquire_block_ns_;

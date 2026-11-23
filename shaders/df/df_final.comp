@@ -50,7 +50,7 @@ void main() {
   float ea, eb, dis;
   vec3 ca, cb;
   if (tx) {
-    vec2 t0 = 0.25 * (full_flow_t(1, sc, px, py) - full_flow_t(0, sc, px, py));
+    vec2 t0 = 0.25 * (full_flow_m(1, sc, px, py) - full_flow_m(0, sc, px, py));
     pa = vec2(px, py) + t0;
     pb = vec2(px, py) - t0;
 #ifdef ZFG_PHASE
@@ -58,12 +58,17 @@ void main() {
     // flows live on A and on B, so nothing is rescaled from a middle field: the motion of what is at this pixel at that time is the two flows
     // read here, the nearer Real's weighing more (at 0.5 it is the middle's own (F01 - F10) / 2); A's sample lies t of it back, B's 1 - t on.
     const float tph = pc.p.w;
-    const vec2 mo = (1.0 - tph) * full_flow_t(0, sc, px, py) - tph * full_flow_t(1, sc, px, py);
+    const vec2 mo = (1.0 - tph) * full_flow_m(0, sc, px, py) - tph * full_flow_m(1, sc, px, py);
     pa = vec2(px, py) - tph * mo;
     pb = vec2(px, py) + (1.0 - tph) * mo;
 #endif
-    vec2 fa = full_flow_t(0, sc, pa.x, pa.y);
-    vec2 fb = full_flow_t(1, sc, pb.x, pb.y);
+    // The two samples first: with the flow guided by colour (DF_PRODUCT_OPTS 256) their lumas are the guides of the flows read where they
+    // landed, so those reads cost the gathers alone.
+    ca = real_bil(0, pa.x, pa.y);
+    cb = real_bil(1, pb.x, pb.y);
+    const vec3 kLuma = 255.0 * vec3(0.299, 0.587, 0.114);
+    vec2 fa = (DF_PRODUCT_OPTS & 256) != 0 ? full_flow_g(0, sc, pa.x, pa.y, dot(ca, kLuma)) : full_flow_t(0, sc, pa.x, pa.y);
+    vec2 fb = (DF_PRODUCT_OPTS & 256) != 0 ? full_flow_g(1, sc, pb.x, pb.y, dot(cb, kLuma)) : full_flow_t(1, sc, pb.x, pb.y);
     if ((DF_OPTS & 64) != 0) {
       // bit 6, the agreement form: each side's sample must MOVE as the middle pixel claims (A to B by -2 t0). Where the claimed point is hidden
       // in A behind something that moves otherwise (a static head over a panning world), A's sample lands on the occluder, whose own loop
@@ -79,8 +84,6 @@ void main() {
       ea = length(fa + full_flow_t(1, sc, pa.x + fa.x, pa.y + fa.y));
       eb = length(fb + full_flow_t(0, sc, pb.x + fb.x, pb.y + fb.y));
     }
-    ca = real_bil(0, pa.x, pa.y);
-    cb = real_bil(1, pb.x, pb.y);
     dis = 255.0 * abs(dot(ca - cb, vec3(0.299, 0.587, 0.114)));  // the doubt keeps the bilinear taps
     if ((DF_OPTS & 128) != 0 && dis > pc.p.y) {
       // bit 7, the symmetric candidates (the RC3 rule: the output's two samples must agree): where the two sides disagree, the midpoint motions

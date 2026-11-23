@@ -78,7 +78,7 @@ constexpr int kCutCorrelation = 300;  // thousandths: under this co-located corr
 constexpr uint32_t kCutLevelWidth = 128;
 // Standalone RZ only: direct cleanup args, grouped cut, lazy sharp samples,
 // identity-store elision and texture-only fine flow. Pyramid retention is separate.
-constexpr int kProductOpts = 31 | 32 | 64 | 128;  // RZ+ (2026-11-20): 32 the camera start, 64 the HUD hold, 128 the cut over the lit points (shaders/df/df_common.glsl)
+constexpr int kProductOpts = 31 | 32 | 64 | 128 | 256;  // RZ+ (2026-11-20): 32 the camera start, 64 the HUD hold, 128 the cut over the lit points; 1.3: 256 the flow guided by colour (shaders/df/df_common.glsl)
 
 uint32_t Groups(uint32_t extent, uint32_t local) { return (extent + local - 1) / local; }
 
@@ -186,7 +186,7 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
     const VkFormatFeatureFlags work = VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
                                       VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
     if (!HasOptimalFeatures(input_format, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) ||
-        !HasOptimalFeatures(VK_FORMAT_R16_SFLOAT, work) || !HasOptimalFeatures(VK_FORMAT_R16G16_SFLOAT, work) ||
+        !HasOptimalFeatures(VK_FORMAT_R16_SFLOAT, work) || !HasOptimalFeatures(VK_FORMAT_R16G16B16A16_SFLOAT, work) ||
         !HasOptimalFeatures(VK_FORMAT_A2B10G10R10_UNORM_PACK32, VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_BLIT_SRC_BIT)) {
       return Status::kUnsupported;
     }
@@ -432,7 +432,8 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
     }
     const Level& finest = levels_[finest_];
     for (OwnedImage& image : flow_image_) {
-      const Status status = image.Create(vulkan_, dispatch_, finest.w, finest.h, VK_FORMAT_R16G16_SFLOAT, work);
+      // RGBA16F: rg the flow, b its Real's luma at the texel (the guide of the colour-guided read), a free.
+      const Status status = image.Create(vulkan_, dispatch_, finest.w, finest.h, VK_FORMAT_R16G16B16A16_SFLOAT, work);
       if (status != Status::kSuccess) return status;
     }
     Status status = fallback_output_.Create(vulkan_, dispatch_, width_, height_, VK_FORMAT_A2B10G10R10_UNORM_PACK32,
@@ -1012,7 +1013,7 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
 
   std::array<Pass, size_t(Stage::kCount)> passes_{};
   std::array<OwnedImage, kMaxLevels> pyr_a_, pyr_b_;  // the luma pyramid per level (level 0: a 1 x 1 stand-in)
-  OwnedImage flow_image_[2];               // the finest solved flow per direction (RG16F)
+  OwnedImage flow_image_[2];               // the finest solved flow per direction (RGBA16F: the flow, the guide luma)
   OwnedImage fallback_output_;             // the output when it cannot be written directly (then blitted)
   OwnedImage tight_[2];                    // cropped copies of A and B (allocated on first use)
   OwnedBuffer pyramid_, flow_, patch_flow_, middle_, dummy_, clean_;

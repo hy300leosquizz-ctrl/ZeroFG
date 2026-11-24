@@ -29,6 +29,7 @@
 
 #include "df_clean_t.h"
 #include "df_clist.h"
+#include "df_halo.h"
 #include "df_cam.h"
 #include "df_cut.h"
 #include "df_dense.h"
@@ -78,7 +79,7 @@ constexpr int kCutCorrelation = 300;  // thousandths: under this co-located corr
 constexpr uint32_t kCutLevelWidth = 128;
 // Standalone RZ only: direct cleanup args, grouped cut, lazy sharp samples,
 // identity-store elision and texture-only fine flow. Pyramid retention is separate.
-constexpr int kProductOpts = 31 | 32 | 64 | 128 | 256;  // RZ+ (2026-11-20): 32 the camera start, 64 the HUD hold, 128 the cut over the lit points; 1.3: 256 the flow guided by colour (shaders/df/df_common.glsl)
+constexpr int kProductOpts = 31 | 32 | 64 | 128 | 256 | 512;  // RZ+ (2026-11-20): 32 the camera start, 64 the HUD hold, 128 the cut over the lit points; 1.3: 256 the flow guided by colour (shaders/df/df_common.glsl), 512 the halo disguised as the background's motion (shaders/df/df_clean_t.comp)
 
 uint32_t Groups(uint32_t extent, uint32_t local) { return (extent + local - 1) / local; }
 
@@ -99,7 +100,7 @@ struct Pass {
   uint32_t stride = 0;  // the passes that bind the Reals or the output: this many sets per frame context, one copy for each
 };
 
-enum class Stage : uint32_t { kCrop, kDown, kDownB, kUp, kPatch, kPatch1, kDense, kDense1, kFinal, kClean, kCList, kCut, kCam, kCount };
+enum class Stage : uint32_t { kCrop, kDown, kDownB, kUp, kPatch, kPatch1, kDense, kDense1, kFinal, kClean, kCList, kCut, kCam, kHalo, kCount };
 
 // The push block of every df pass (shaders/df/df_common.glsl).
 struct Push {
@@ -314,6 +315,11 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
     }
     BindSampled(Stage::kFinal, Copy(Stage::kFinal, 0), 13, picture_a ? picture_a->view : view_a, picture_a ? picture_a->layout : layout_a);
     BindSampled(Stage::kFinal, Copy(Stage::kFinal, 0), 14, picture_b ? picture_b->view : view_b, picture_b ? picture_b->layout : layout_b);
+    // 1.3: the halo disguise (its decision and the cleanup's fill) reads the same Reals as the final pass, in this flight's copy of the sets.
+    for (Stage stage : {Stage::kClean, Stage::kHalo}) {
+      BindSampled(stage, Copy(stage, 0), 13, picture_a ? picture_a->view : view_a, picture_a ? picture_a->layout : layout_a);
+      BindSampled(stage, Copy(stage, 0), 14, picture_b ? picture_b->view : view_b, picture_b ? picture_b->layout : layout_b);
+    }
     if (output_or_null) {
       BindStorageImage(Stage::kClean, Copy(Stage::kClean, 0), 20, write_direct ? output_or_null->view : fallback_output_.view());
       BindStorageImage(Stage::kFinal, Copy(Stage::kFinal, 0), 20, write_direct ? output_or_null->view : fallback_output_.view());
@@ -454,6 +460,9 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
       if (status != Status::kSuccess) return status;
     }
     status = clean_.Create(vulkan_, dispatch_, 64 + VkDeviceSize(Groups(PictureW(), 16)) * Groups(PictureH(), 16) * 2 * 4, storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+    if (status != Status::kSuccess) return status;
+    // 1.3: the halo disguise's decision per 4 x 4 block (v, applies), from df_halo to the cleanup.
+    status = halo_.Create(vulkan_, dispatch_, (ProductOpts() & 512) != 0 ? VkDeviceSize(Groups(PictureW(), 4)) * Groups(PictureH(), 4) * 3 * 4 : 4, storage);
     if (status != Status::kSuccess) return status;
     // RZ+ HUD hold: one run of pairs per picture pixel, zeroed on the first record.
     status = hud_runs_.Create(vulkan_, dispatch_, product_ ? pixels * 4 : 4, storage);
@@ -604,11 +613,12 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
         MakePass(&passes_[uint32_t(Stage::kClean)], zerofg_df_clean_t_spv, sizeof(zerofg_df_clean_t_spv), DfBindings(true, true), 64, frame_contexts_, 0, 1) &&
         MakePass(&passes_[uint32_t(Stage::kCList)], zerofg_df_clist_spv, sizeof(zerofg_df_clist_spv), DfBindings(false, true), 64, 1) &&
         MakePass(&passes_[uint32_t(Stage::kCut)], zerofg_df_cut_spv, sizeof(zerofg_df_cut_spv), DfBindings(false, true), 64, sets) &&
-        MakePass(&passes_[uint32_t(Stage::kCam)], zerofg_df_cam_spv, sizeof(zerofg_df_cam_spv), DfBindings(false, true), 64, sets);
+        MakePass(&passes_[uint32_t(Stage::kCam)], zerofg_df_cam_spv, sizeof(zerofg_df_cam_spv), DfBindings(false, true), 64, sets) &&
+        MakePass(&passes_[uint32_t(Stage::kHalo)], zerofg_df_halo_spv, sizeof(zerofg_df_halo_spv), DfBindings(false, true), 64, frame_contexts_);
     P(Stage::kCrop).stride = 2;
     P(Stage::kDown).stride = sets;
     if (retain_pyramid_) P(Stage::kDownB).stride = sets;
-    P(Stage::kFinal).stride = P(Stage::kClean).stride = 1;
+    P(Stage::kFinal).stride = P(Stage::kClean).stride = P(Stage::kHalo).stride = 1;
     return ok ? Status::kSuccess : Status::kVulkanError;
   }
 
@@ -653,7 +663,7 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
   // level's) and level l's storage views. The internal images stay in GENERAL (written and sampled).
   void BindStaticDescriptors() {
     const VkImageLayout general = VK_IMAGE_LAYOUT_GENERAL;
-    for (Stage stage : {Stage::kDown, Stage::kDownB, Stage::kUp, Stage::kPatch, Stage::kPatch1, Stage::kDense, Stage::kDense1, Stage::kFinal, Stage::kClean, Stage::kCList, Stage::kCut, Stage::kCam}) {
+    for (Stage stage : {Stage::kDown, Stage::kDownB, Stage::kUp, Stage::kPatch, Stage::kPatch1, Stage::kDense, Stage::kDense1, Stage::kFinal, Stage::kClean, Stage::kCList, Stage::kCut, Stage::kCam, Stage::kHalo}) {
       const uint32_t per_copy = P(stage).stride ? P(stage).stride : uint32_t(P(stage).sets.size());
       for (uint32_t set = 0; set < uint32_t(P(stage).sets.size()); ++set) {
         for (uint32_t binding : {0u, 4u, 5u, 6u, 7u, 8u}) BindBuffer(stage, set, binding, dummy_);
@@ -680,8 +690,11 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
         BindSampled(stage, set, 14, PyramidBank(1u - a_bank, level).view(), general);
       }
     }
-    for (Stage stage : {Stage::kFinal, Stage::kClean, Stage::kCList})
+    for (Stage stage : {Stage::kFinal, Stage::kClean, Stage::kCList, Stage::kHalo})
       for (uint32_t set = 0; set < uint32_t(P(stage).sets.size()); ++set) BindBuffer(stage, set, 25, clean_);
+    // 1.3: the halo disguise's decisions, written by df_halo and read by the cleanup (binding 4, the lab's scratch).
+    for (Stage stage : {Stage::kClean, Stage::kHalo})
+      for (uint32_t set = 0; set < uint32_t(P(stage).sets.size()); ++set) BindBuffer(stage, set, 4, halo_);
     for (Stage stage : {Stage::kCut, Stage::kCam, Stage::kPatch, Stage::kPatch1})
       for (uint32_t set = 0; set < uint32_t(P(stage).sets.size()); ++set) BindBuffer(stage, set, 25, clean_);
     // RZ+ HUD hold: each pixel's run of pairs (shaders/df/df_final.comp, acc[]); the dummy elsewhere.
@@ -912,6 +925,14 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
       tiles.a[2] = 1;
       Dispatch(cmd, Stage::kCList, 0, &tiles, sizeof(tiles), 1, 1);
     }
+    // 1.3: the halo disguise's decision per 4 x 4 block of the listed tiles (the tile flags the final pass wrote), before the cleanup reads it.
+    const int32_t phase_milli = int32_t(std::lround(1000.0f * (Phased() ? phase_ : 0.5f)));
+    if (cleanup && (ProductOpts() & 512) != 0) {
+      Push halo;
+      halo.a[0] = int32_t(PictureW()); halo.a[1] = int32_t(PictureH());
+      halo.b[0] = fin.a[3]; halo.b[1] = phase_milli;
+      Dispatch(cmd, Stage::kHalo, 0, &halo, sizeof(halo), Groups(Groups(PictureW(), 4), 8), Groups(Groups(PictureH(), 4), 8));
+    }
     if (cleanup) {
       MemoryBarrier(cmd, kCompute, VK_ACCESS_2_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | kCompute,
                     VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
@@ -919,6 +940,8 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
     Push clean;
     clean.a[0] = int32_t(PictureW()); clean.a[1] = int32_t(PictureH()); clean.a[2] = 1;
     clean.p[0] = kCleanLow; clean.p[1] = kCleanHigh;
+    clean.b[0] = fin.a[3];                                                    // the flow's scale, as the final pass reads it
+    clean.b[1] = phase_milli;                                                 // the output's time between A and B
     if (cleanup) {
       Pass& pass = P(Stage::kClean);
       dispatch_.cmd_bind_pipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pass.pipeline);
@@ -972,7 +995,7 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
     for (OwnedImage* image : {&flow_image_[0], &flow_image_[1], &fallback_output_, &tight_[0], &tight_[1]}) {
       image->Destroy(vulkan_, dispatch_);
     }
-    for (OwnedBuffer* buffer : {&pyramid_, &flow_, &patch_flow_, &middle_, &dummy_, &clean_, &hud_runs_}) buffer->Destroy(vulkan_, dispatch_);
+    for (OwnedBuffer* buffer : {&pyramid_, &flow_, &patch_flow_, &middle_, &dummy_, &clean_, &hud_runs_, &halo_}) buffer->Destroy(vulkan_, dispatch_);
     if (sampler_ != VK_NULL_HANDLE) dispatch_.destroy_sampler(vulkan_.device, sampler_, vulkan_.allocator);
     sampler_ = VK_NULL_HANDLE;
   }
@@ -1016,7 +1039,7 @@ class DfContext final : public AlgorithmContext, public DenseFlowSource {
   OwnedImage flow_image_[2];               // the finest solved flow per direction (RGBA16F: the flow, the guide luma)
   OwnedImage fallback_output_;             // the output when it cannot be written directly (then blitted)
   OwnedImage tight_[2];                    // cropped copies of A and B (allocated on first use)
-  OwnedBuffer pyramid_, flow_, patch_flow_, middle_, dummy_, clean_;
+  OwnedBuffer pyramid_, flow_, patch_flow_, middle_, dummy_, clean_, halo_;
   OwnedBuffer hud_runs_;      // RZ+ HUD hold: one run of pairs per picture pixel (product only)
   bool hud_runs_zeroed_ = false;
   uint32_t hud_pair_ = 0;     // RZ+ HUD hold: the stamp of the pair being recorded (its runs carry the last pair they were seen in)

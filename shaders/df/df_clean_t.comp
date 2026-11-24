@@ -5,7 +5,8 @@
 // shared memory (rows, then columns) and blends the doubtful pixels into their 5 x 5 box: the same arithmetic as df_dens + df_clean on 10-bit
 // colour, with 8 bytes of traffic per pixel instead of about 50. ZFG_DF_TILE: 16 (the default) or 8 (a quarter of the shared memory per group,
 // for GPUs whose occupancy it limits).
-// pc.a = (W, H, the cleanup (0 none, 1 the box, 2 the Real B, 3 half of each), 0), pc.p = (low, high, 0, 0). Writes A2B10G10R10 words (ZFG_DF_IMAGE_OUT: an rgb10_a2 storage image instead).
+// pc.a = (W, H, the cleanup (0 none, 1 the box, 2 the Real B, 3 half of each), 0), pc.b = (the flow's scale, the phase x 1000, 0, 0) for the halo
+// disguise (DF_PRODUCT_OPTS 512; its decision per 4 x 4 block in vrs[], from df_halo.comp), pc.p = (low, high, 0, 0). Writes A2B10G10R10 words (ZFG_DF_IMAGE_OUT: an rgb10_a2 storage image instead).
 #include "df_common.glsl"
 #ifndef ZFG_DF_TILE
 #define ZFG_DF_TILE 16
@@ -17,6 +18,21 @@ shared uint tile[TB][TB];
 shared float rows[TB][TL];
 
 vec3 dec(uint w) { return vec3(float(w & 1023u), float((w >> 10) & 1023u), float((w >> 20) & 1023u)) / 1023.0; }
+
+// 1.3 (DF_PRODUCT_OPTS 512): the occlusion halo disguised as the background's own motion; df_halo.comp decides per 4 x 4 block whether it
+// applies and along which motion v (the reasons are written there). The content comes along v from both Reals (A at x - t v, B at
+// x + (1 - t) v, the nearer weighted more) over a line half the motion long, then is clamped to the 5 x 5 range already there (TAA's
+// neighbourhood clamp: a wipe's black curtain cannot speck a flat sky). The fill of one pixel along its block's elected v (|v| >= 4 px): 9 taps.
+vec3 halo_fill(ivec2 p, int W, int H, vec2 v) {
+  const float t = float(pc.b.y) * 0.001;
+  vec3 s = vec3(0.0);
+  vec2 dir = normalize(v) * min(0.5 * length(v), 48.0);
+  for (int q = 0; q < 9; ++q) {
+    vec2 x = vec2(clamp(ivec2(floor(vec2(p) + 0.5 + dir * (float(q) / 8.0 - 0.5))), ivec2(0), ivec2(W - 1, H - 1)));
+    s += mix(real_bil(0, x.x - t * v.x, x.y - t * v.y), real_bil(1, x.x + (1.0 - t) * v.x, x.y + (1.0 - t) * v.y), t);
+  }
+  return s / 9.0;
+}
 
 void main() {
   int W = pc.a.x, H = pc.a.y;
@@ -57,7 +73,18 @@ void main() {
     if (r > 0.0) {
       // pc.a.z = 1: the 5 x 5 box; 2: the Real B where it stands (the RC3 way to fail: one sharp picture, never two); 3: half of each.
       vec3 s = vec3(0.0);
-      if (pc.a.z != 2) {
+      bool moved = false;
+      if ((DF_PRODUCT_OPTS & 512) != 0 && pc.a.z == 1) {
+        const uint i = uint((p.y / 4) * ((W + 3) / 4) + p.x / 4) * 3u;
+        if (vrs[i + 2u] > 0.5) { s = halo_fill(p, W, H, vec2(vrs[i], vrs[i + 1u])); moved = true; }
+      }
+      if (moved) {
+        // The halo disguise's colour stays within the 5 x 5 range of the picture already there (TAA's neighbourhood clamp).
+        vec3 lo = vec3(1.0), hi = vec3(0.0);
+        for (int j = 2; j <= 6; ++j)
+          for (int k = 2; k <= 6; ++k) { vec3 q = dec(tile[ly + j][lx + k]); lo = min(lo, q); hi = max(hi, q); }
+        s = clamp(s, lo, hi);
+      } else if (pc.a.z != 2) {
         for (int j = 2; j <= 6; ++j)
           for (int k = 2; k <= 6; ++k) s += dec(tile[ly + j][lx + k]);
         s /= 25.0;

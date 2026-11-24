@@ -149,7 +149,7 @@ vec2 full_flow_t(int d, int scale, float x, float y) {
   return float(scale) * textureLod(flowT0, q / vec2(DF_FLOW_SIZE(flowT0)), 0.0).rg;
 }
 
-// The flow guided by colour (RZ+ 1.3, DF_PRODUCT_OPTS 256; after Kopf et al.'s joint bilateral upsampling, the owner's occlusion halo of
+// The flow guided by colour (RZ+ 1.2.1, DF_PRODUCT_OPTS 256; after Kopf et al.'s joint bilateral upsampling, the owner's occlusion halo of
 // 2026-11-23): the 2 x 2 flow texels around the pixel in three gathers (x, y and the guide luma store_flow_t packs beside the flow), each
 // weighted bilinearly and by how much its guide looks like the pixel's own luma l0 (0..255). At a motion edge a background pixel stops taking
 // the occluder's vector from the texel next to it, so the solved level's 4 px steps (16-32 px squares on screen) follow the object's own

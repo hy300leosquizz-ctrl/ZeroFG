@@ -19,7 +19,7 @@ shared float rows[TB][TL];
 
 vec3 dec(uint w) { return vec3(float(w & 1023u), float((w >> 10) & 1023u), float((w >> 20) & 1023u)) / 1023.0; }
 
-// 1.3 (DF_PRODUCT_OPTS 512): the occlusion halo disguised as the background's own motion; df_halo.comp decides per 4 x 4 block whether it
+// 1.2.1 (DF_PRODUCT_OPTS 512): the occlusion halo disguised as the background's own motion; df_halo.comp decides per 4 x 4 block whether it
 // applies and along which motion v (the reasons are written there). The content comes along v from both Reals (A at x - t v, B at
 // x + (1 - t) v, the nearer weighted more) over a line half the motion long, then is clamped to the 5 x 5 range already there (TAA's
 // neighbourhood clamp: a wipe's black curtain cannot speck a flat sky). The fill of one pixel along its block's elected v (|v| >= 4 px): 9 taps.

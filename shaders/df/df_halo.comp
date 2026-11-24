@@ -1,6 +1,6 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
-// df 1.3 (DF_PRODUCT_OPTS 512): the halo disguise's decision, one lane per 4 x 4 block of the picture, for the blocks of the tiles the cleanup
+// df 1.2.1 (DF_PRODUCT_OPTS 512): the halo disguise's decision, one lane per 4 x 4 block of the picture, for the blocks of the tiles the cleanup
 // lists (a flag in their tile's 3 x 3). It runs apart from the cleanup because a GPU wave pays for the decision whenever any of its lanes needs
 // it: inside the cleanup that was nearly every wave of a fast pan, here every lane decides a block of its own. Writes vrs[3 i ..] = (v, applies)
 // for block i (row-major, (W + 3) / 4 blocks a row); df_clean_t.comp fills the block's doubtful pixels along v.
@@ -10,7 +10,7 @@ layout(local_size_x = 8, local_size_y = 8) in;
 
 const vec3 kY = vec3(0.299, 0.587, 0.114);
 
-// 1.3 (DF_PRODUCT_OPTS 512, the lab's clean=7+mbs=2+mbg=1+mbt=2+mbc=1, 2026-11-24): the occlusion halo disguised as the background's own motion.
+// 1.2.1 (DF_PRODUCT_OPTS 512, the lab's clean=7+mbs=2+mbg=1+mbt=2+mbc=1, 2026-11-24): the occlusion halo disguised as the background's own motion.
 // The owner's instinct: going along one specific motion makes the fill consistent, and consistency fools the eye in motion (DLSS 4 shows the
 // halo too: nobody has that information). The motion is ELECTED by 13 flow samples (here, 4 at 12 px, 8 at 24 px; the most samples within
 // 2 px + 8 % of it, ties to the larger), the content comes along it from both Reals (A at x - t v, B at x + (1 - t) v, the nearer weighted more)

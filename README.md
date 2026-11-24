@@ -309,6 +309,12 @@ The engine is unchanged; this release is the reference host's pacing
   ZeroFG's pipelines runs Compat at the next launch, and ZeroFG turns off
   after a second crash.
 
+## Support ZeroFG
+
+If you enjoy ZeroFG and would like to support its continued open-source
+development and testing, [buy us a coffee](https://buymeacoffee.com/Hy300leosquizz).
+Every contribution is genuinely appreciated!
+
 ## Contact
 
 Questions, integration help and collaboration: **fgzerofg@gmail.com**.

@@ -1,6 +1,6 @@
 # ZeroFG
 
-> Frame generation for mobile GPUs, built on Vulkan. **Version 1.2.0.**
+> Frame generation for mobile GPUs, built on Vulkan. **Version 1.2.1.**
 
 ZeroFG multiplies a game's frame rate by the factor you choose (x2, x3 or x4)
 by creating synthetic frames between the real ones. A game at 30 fps can show
@@ -31,11 +31,29 @@ frames in between along that motion.
    where what is lit in both frames still matches, is interpolated.
 6. **Picture and cleanup.** Both frames are blended along the motion at each
    in-between point, and only the spots where they disagree are softened.
+   Where a moving object uncovers the background, the Advanced VTF Filter
+   (Vector Trail Fill) fills the uncovered pixels along the background's own
+   motion, from both frames.
 
 | Cost per generated frame at 1280 x 640 | x2 | x4 (three frames) |
 | --- | --- | --- |
 | Adreno 840 | 0.78 ms | 2.58 ms |
 | Adreno 650 (Turnip) | about 10 ms | |
+
+## What's new in 1.2.1
+
+A small improvement: the **Advanced VTF Filter** (Vector Trail Fill). When a
+character crosses a moving background, the pixels it uncovers exist in only
+one of the two real frames, so no motion fits them. Every frame generator
+shows a halo there; ZeroFG 1.2.0 showed a soft blob that stood out in motion.
+1.2.1 picks the background's motion around the edge and fills those pixels
+with a short trail along it, taken from both frames, so the halo reads as the
+background's motion blur instead of a blob. It applies only where the moving
+side and the still side sit on opposite sides of the edge and the texture
+agrees, and the fill stays within the colours of its neighbourhood. The flow
+is also guided by colour at motion edges, so its blocks follow the object's
+outline. The cost is about the same: within 0.1 ms on the Adreno 840 at x2
+and x4.
 
 ## What's new in 1.2
 
@@ -179,7 +197,7 @@ Or let CMake fetch it:
 include(FetchContent)
 FetchContent_Declare(zerofg
   GIT_REPOSITORY https://github.com/hy300leosquizz-ctrl/ZeroFG.git
-  GIT_TAG v1.2.0)
+  GIT_TAG v1.2.1)
 FetchContent_MakeAvailable(zerofg)
 target_link_libraries(my_host PRIVATE zerofg::zerofg)
 ```

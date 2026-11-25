@@ -79,7 +79,7 @@ constexpr int kCutCorrelation = 300;  // thousandths: under this co-located corr
 constexpr uint32_t kCutLevelWidth = 128;
 // Standalone RZ only: direct cleanup args, grouped cut, lazy sharp samples,
 // identity-store elision and texture-only fine flow. Pyramid retention is separate.
-constexpr int kProductOpts = 31 | 32 | 64 | 128 | 256 | 512;  // RZ+ (2026-11-20): 32 the camera start, 64 the HUD hold, 128 the cut over the lit points; 1.2.1: 256 the flow guided by colour (shaders/df/df_common.glsl), 512 the halo disguised as the background's motion (shaders/df/df_clean_t.comp)
+constexpr int kProductOpts = 31 | 32 | 64 | 128 | 256 | 512;  // RZ+ (2026-11-20): 32 the camera start, 64 the HUD hold, 128 the cut over the lit points; 1.2.1: 256 the flow guided by colour (shaders/df/df_common.glsl), 512 the Advanced VTF Filter (Vector Trail Fill): the halo disguised as the background's motion (shaders/df/df_halo.comp, df_clean_t.comp)
 
 uint32_t Groups(uint32_t extent, uint32_t local) { return (extent + local - 1) / local; }
 

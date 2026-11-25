@@ -1034,6 +1034,11 @@ inline std::atomic<uint64_t>& host_present_submissions() {
   static std::atomic<uint64_t> v{0};
   return v;
 }
+// The presents the display showed, as VK_GOOGLE_display_timing reports them.
+inline std::atomic<uint64_t>& host_present_displayed() {
+  static std::atomic<uint64_t> v{0};
+  return v;
+}
 }  // namespace internal
 
 inline void RecordHostPresentSubmission() {
@@ -1042,6 +1047,19 @@ inline void RecordHostPresentSubmission() {
 
 inline uint64_t GetHostPresentSubmissionCount() {
   return internal::host_present_submissions().load(std::memory_order_relaxed);
+}
+
+// Call once per present the display showed: a past presentation timing came
+// back for it with a real actualPresentTime, on a scanout no earlier present
+// already had. Unlike the submissions above, a present the compositor dropped
+// (two in one refresh: only the newer is shown) never counts. Stays at zero
+// where the swap chain has no VK_GOOGLE_display_timing.
+inline void RecordHostPresentDisplayed() {
+  internal::host_present_displayed().fetch_add(1, std::memory_order_relaxed);
+}
+
+inline uint64_t GetHostPresentDisplayedCount() {
+  return internal::host_present_displayed().load(std::memory_order_relaxed);
 }
 
 // Main Surface Authority: true while ZeroFG's device B produces into the main

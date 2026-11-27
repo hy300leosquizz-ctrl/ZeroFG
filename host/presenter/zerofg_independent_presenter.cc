@@ -479,6 +479,8 @@ struct ZeroFGIndependentPresenter::Impl {
   static constexpr uint32_t kBetterDMinSamples = 32;
   static constexpr size_t kBetterDWindowCapacity = 128;
   static constexpr uint64_t kBetterDFMaxNs = 32000000ull;
+  // The most D may operate at (ApplyBetterDSetpoint): a 20 fps source's need.
+  static constexpr uint64_t kBetterDCeilingNs = 60000000ull;
   static constexpr uint32_t kBetterDStepDivisor = 64;
   static constexpr uint32_t kBetterDArmDivisor = 4;
   static constexpr uint64_t kBetterDMarginNs = 1000000ull;
@@ -10507,7 +10509,13 @@ struct ZeroFGIndependentPresenter::Impl {
       ++better_d_f_ceiling_exit_total;
     }
     const uint64_t causal_ns = BetterDCausalNs();
-    const uint64_t d_ns = SaturatingAddNs(causal_ns, better_d_f_ns);
+    // The owner's ceiling (2026-11-27, pacing-shadow test): D never past what a
+    // 20 fps source needs (half its 50 ms pair, the generation and a margin).
+    // An erratic source (Daytona on Xendroid+ at 10-60 fps) taught a need of
+    // 65-86 ms at the median and D 70-110 ms; past the ceiling a late B costs
+    // its pair's synthetic (judder), not every Real's latency.
+    const uint64_t d_ns =
+        std::min(SaturatingAddNs(causal_ns, better_d_f_ns), kBetterDCeilingNs);
     better_d_causal_last_ns = causal_ns;
     latency_required_last_ns = causal_ns;
     operating_latency_ns = d_ns;

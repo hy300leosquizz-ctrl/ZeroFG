@@ -21,7 +21,10 @@ DEFINE_uint32(zerofg_multiplier, 2, "", "ZeroFG");
 DEFINE_bool(zerofg_phase_recovery, true, "", "ZeroFG");
 DEFINE_bool(zerofg_free_output, true, "", "ZeroFG");
 DEFINE_bool(zerofg_vsync_quantizer, true, "", "ZeroFG");
-DEFINE_bool(zerofg_vsync_tight_reach, false, "", "ZeroFG");
+// On in the pacing-shadow test builds (2026-11-27): ARMSX2 at a 30 lock on 60 Hz handed each output to the egress
+// at its target (present call vs desired p50 -0.06 ms) and the sum reach (copy + a refresh + margin) put it two
+// vsyncs out, ready 27 ms before its vsync. The tight reach keeps its own session fallback (5 % late).
+DEFINE_bool(zerofg_vsync_tight_reach, true, "", "ZeroFG");
 // On in the pacing-shadow test builds (2026-11-27): JoJo at a 30 lock on 60 Hz showed the quantizer's phase
 // pushed one vsync for long stretches (Real age +13 ms), with no free vsync at one output per refresh to shed into.
 DEFINE_bool(zerofg_vsync_retire, true, "", "ZeroFG");

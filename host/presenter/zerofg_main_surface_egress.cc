@@ -1693,6 +1693,48 @@ bool ZeroFGMainSurfaceEgress::RetireBehindSynthetic(const Request& request) {
           : anchor_ns +
                 (target_ns - anchor_ns + period_ns - 1) / period_ns * period_ns;
   const uint64_t slot_ns = at_or_after_ns + vsync_offset_periods_ * period_ns;
+  // Pushed-phase shed (2026-11-27, ARMSX2 at a 30 lock on 60 Hz): a phase the
+  // reach pushed stays pushed when every vsync has an output (one output per
+  // refresh), since QuantizeToVsync only sheds into a free vsync. The outputs
+  // there were ready ~36 ms before their vsync, holding 1-2 vsyncs of
+  // latency for nothing. When the output after this Synthetic (its target one
+  // quantum later, presented around its target) would reach this Synthetic's
+  // vsync under the tight reach, for kVsyncShedStreak outputs in a row, the
+  // Synthetic is dropped and the phase sheds one refresh into its vsync.
+  if (request.synthetic && vsync_offset_periods_ &&
+      tight_reach_.load(std::memory_order_relaxed) && request.output_quantum_ns &&
+      slot_ns >= vsync_last_slot_ns_ + period_ns / 2) {
+    uint64_t copy_tail_ns = 0;
+    {
+      std::lock_guard<std::mutex> lock(stats_mutex_);
+      if (copy_residence_ns_.count()) {
+        copy_tail_ns = copy_residence_ns_.Quantile(90, 100);
+      }
+    }
+    const uint64_t next_present_ns = target_ns + request.output_quantum_ns;
+    const uint64_t next_reach_target_ns =
+        next_present_ns +
+        std::max(period_ns + kCompositorLeadExtraNs, copy_tail_ns) +
+        kVsyncLatchMarginNs;
+    const uint64_t next_reach_ns =
+        next_reach_target_ns <= anchor_ns
+            ? anchor_ns - (anchor_ns - next_reach_target_ns) / period_ns * period_ns
+            : anchor_ns + (next_reach_target_ns - anchor_ns + period_ns - 1) /
+                              period_ns * period_ns;
+    if (slot_ns + period_ns / 2 >= next_reach_ns) {
+      if (++vsync_shed_streak_ >= kVsyncShedStreak) {
+        vsync_shed_streak_ = 0;
+        --vsync_offset_periods_;
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        ++counters_.vsync_retired;
+        return true;
+      }
+    } else {
+      vsync_shed_streak_ = 0;
+    }
+  } else if (!vsync_offset_periods_) {
+    vsync_shed_streak_ = 0;
+  }
   // Behind: the vsync this output's tick maps to is the previous present's,
   // or an earlier one; QuantizeToVsync would push it to the next.
   if (slot_ns >= vsync_last_slot_ns_ + period_ns / 2) {

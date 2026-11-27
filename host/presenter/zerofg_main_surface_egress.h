@@ -560,6 +560,10 @@ class ZeroFGMainSurfaceEgress {
   // own vsync the previous present already had.
   const bool vsync_retire_;
   uint32_t vsync_behind_streak_ = 0;
+  // Pushed-phase shed (2026-11-27): consecutive outputs whose pushed phase the
+  // next output could have reached one vsync earlier.
+  uint32_t vsync_shed_streak_ = 0;
+  static constexpr uint32_t kVsyncShedStreak = 8;
   uint32_t tight_reach_window_presents_ = 0;
   uint32_t tight_reach_window_late_ = 0;
   bool last_quantize_tight_only_ = false;

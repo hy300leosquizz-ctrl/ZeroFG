@@ -734,6 +734,10 @@ void ZeroFGMainSurfaceEgress::Serve() {
       DropUnpresented(request, true);
       continue;
     }
+    if (vsync_retire_ && YieldToReal(request)) {
+      DropUnpresented(request, true);
+      continue;
+    }
     if (vsync_retire_ && DrainBacklog(request)) {
       DropUnpresented(request, true);
       continue;
@@ -2129,6 +2133,50 @@ void ZeroFGMainSurfaceEgress::ObserveRealLatency(const TimingRecord& record,
       actual_ns - record.issue_time_ns;
 }
 
+bool ZeroFGMainSurfaceEgress::YieldToReal(const Request& request) {
+  if (!request.synthetic || !request.next_real_offset_ns ||
+      !request.output_quantum_ns || !request.desired_present_ns ||
+      limiter_period_ns_ || limiter_block_streak_ || !vsync_anchor_ns_) {
+    return false;
+  }
+  uint64_t period_ns = 0;
+  {
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+    period_ns = counters_.refresh_cycle_now_ns;
+  }
+  // Only over capacity: outputs spaced closer than a refresh (ARMSX2 at 60 fps
+  // x2 on 60 Hz, 2026-11-27: the S that got through re-formed a chain of Reals
+  // the backlog drain then cut 2-6 Reals a second out of).
+  if (!period_ns || request.output_quantum_ns * 20 >= period_ns * 19) {
+    return false;
+  }
+  const uint64_t anchor_ns = vsync_anchor_ns_;
+  const auto vsync_at_or_after = [anchor_ns, period_ns](uint64_t t) {
+    if (t <= anchor_ns) {
+      return anchor_ns - (anchor_ns - t) / period_ns * period_ns;
+    }
+    return anchor_ns + (t - anchor_ns + period_ns - 1) / period_ns * period_ns;
+  };
+  const uint64_t offset_ns = vsync_offset_periods_ * period_ns;
+  const auto after = [&](uint64_t own_ns, uint64_t last_ns) {
+    return last_ns && own_ns < last_ns + period_ns / 2 ? last_ns + period_ns
+                                                       : own_ns;
+  };
+  const uint64_t s_slot_ns =
+      after(vsync_at_or_after(request.desired_present_ns) + offset_ns,
+            vsync_last_slot_ns_);
+  const uint64_t b_own_ns =
+      vsync_at_or_after(request.desired_present_ns +
+                        request.next_real_offset_ns) + offset_ns;
+  const uint64_t b_with_ns = after(b_own_ns, s_slot_ns);
+  const uint64_t b_without_ns = after(b_own_ns, vsync_last_slot_ns_);
+  if (b_with_ns <= b_without_ns + period_ns / 2) {
+    return false;
+  }
+  ++yielded_synthetic_;
+  return true;
+}
+
 bool ZeroFGMainSurfaceEgress::DrainBacklog(const Request& request) {
   if (limiter_period_ns_ || limiter_block_streak_ || !vsync_anchor_ns_ ||
       !vsync_last_slot_ns_ || !request.desired_present_ns) {
@@ -2283,12 +2331,14 @@ void ZeroFGMainSurfaceEgress::LogSummary(
           ? std::string("age split not measured")
           : fmt::format("age split p50: issue->target {:.1f}, target->vsync {:.1f}, vsync->shown {:.1f} ms; "
                         "quantizer offset {} vsync(s), {} pushed, {} absorbed, {} refused, {} S retired{}; "
-                        "backlog drained {} Real(s) + {} S",
+                        "backlog drained {} Real(s) + {} S; {} S yielded to their Real",
                         median_ms(shadow_lattice_ns_), median_ms(shadow_quantizer_ns_),
                         median_ms(shadow_display_ns_), vsync_offset_periods_, reanchor, absorbed, refused,
                         retired, vsync_retire_ ? "" : " (retire off)",
                         backlog_drained_real_ - shadow_last_drained_real_,
-                        backlog_drained_synthetic_ - shadow_last_drained_synthetic_);
+                        backlog_drained_synthetic_ - shadow_last_drained_synthetic_,
+                        yielded_synthetic_ - shadow_last_yielded_);
+  shadow_last_yielded_ = yielded_synthetic_;
   shadow_last_drained_real_ = backlog_drained_real_;
   shadow_last_drained_synthetic_ = backlog_drained_synthetic_;
   shadow_lattice_ns_.clear();

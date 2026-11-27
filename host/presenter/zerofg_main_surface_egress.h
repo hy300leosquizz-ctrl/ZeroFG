@@ -570,6 +570,12 @@ class ZeroFGMainSurfaceEgress {
   // a source that fills the panel (no free vsync ever drains the chain): the
   // output is dropped, Real or Synthetic, and the chain shortens by one.
   bool DrainBacklog(const Request& request);
+  // Over capacity (the lattice's quantum shorter than a refresh: not every
+  // output can have a vsync of its own), a Synthetic yields its vsync to its
+  // pair's Real: dropped when showing it would push B a vsync later.
+  bool YieldToReal(const Request& request);
+  uint64_t yielded_synthetic_ = 0;
+  uint64_t shadow_last_yielded_ = 0;
   uint32_t backlog_streak_ = 0;
   uint64_t backlog_drained_real_ = 0;
   uint64_t backlog_drained_synthetic_ = 0;

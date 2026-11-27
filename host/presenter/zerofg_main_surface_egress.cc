@@ -1021,9 +1021,18 @@ bool ZeroFGMainSurfaceEgress::ServeRequest(const Request& request,
     context.assigned_vsync_ns = 0;
     last_quantize_tight_only_ = false;
     if (vsync_quantizer_) {
+      const uint64_t shadow_previous_slot_ns = vsync_last_slot_ns_;
+      const uint64_t shadow_offset_before = vsync_offset_periods_;
+      const uint64_t shadow_target_ns = present_time.desiredPresentTime;
       present_time.desiredPresentTime =
           QuantizeToVsync(present_time.desiredPresentTime,
                           EgressMonotonicTimeNs(), context.assigned_vsync_ns);
+      if (request.synthetic && context.assigned_vsync_ns) {
+        Request judged = request;
+        judged.desired_present_ns = shadow_target_ns;
+        ShadowReserve(judged, shadow_previous_slot_ns, shadow_offset_before,
+                      context.assigned_vsync_ns);
+      }
     }
     VkPresentTimesInfoGOOGLE present_times = {
         VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE};
@@ -1075,6 +1084,14 @@ bool ZeroFGMainSurfaceEgress::ServeRequest(const Request& request,
     if (latency_mode_ != request.latency_mode ||
         latency_generation_ != request.latency_generation) {
       ++latency_batch_.invalid;
+    }
+    if (request.synthetic) {
+      ++shadow_synthetics_presented_;
+    } else {
+      ++shadow_reals_presented_;
+    }
+    if (request.operated_depth_ns) {
+      shadow_depth_ns_ = request.operated_depth_ns;
     }
     TimingRecord& record = timing_records_[timing_record_next_];
     if (timing_available_ && record.used && !record.resolved) {
@@ -2017,6 +2034,26 @@ void ZeroFGMainSurfaceEgress::ObserveRealLatency(const TimingRecord& record,
   latency_last_source_id_ = record.source_id;
   latency_last_issue_ns_ = record.issue_time_ns;
   latency_last_shown_ns_ = actual_ns;
+  // Shadow: B's predicted vsync against the one it got, and the tripwire.
+  bool predicted = false;
+  for (ShadowPrediction& prediction : shadow_predictions_) {
+    if (prediction.source_id && prediction.source_id == record.source_id) {
+      if (shadow_errors_ns_.size() < 4096) {
+        shadow_errors_ns_.push_back(int64_t(actual_ns) -
+                                    int64_t(prediction.predicted_ns));
+      }
+      prediction = {};
+      predicted = true;
+      break;
+    }
+  }
+  if (!predicted && shadow_synthetics_judged_) {
+    ++shadow_error_unmatched_;
+  }
+  if (shadow_depth_ns_ &&
+      actual_ns - record.issue_time_ns > shadow_depth_ns_ + kShadowTripNs) {
+    ++shadow_would_trip_;
+  }
   if (latency_batch_.samples == LatencyBatch::kCapacity) {
     ++latency_batch_.overflow;
     return;
@@ -2031,6 +2068,109 @@ void ZeroFGMainSurfaceEgress::ObserveRealLatency(const TimingRecord& record,
   latency_batch_.shown_last_ns = actual_ns;
   latency_batch_.samples_ns[latency_batch_.samples++] =
       actual_ns - record.issue_time_ns;
+}
+
+void ZeroFGMainSurfaceEgress::ShadowReserve(const Request& request,
+                                            uint64_t previous_slot_ns,
+                                            uint64_t offset_before,
+                                            uint64_t synthetic_slot_ns) {
+  if (!request.next_real_offset_ns || !request.issue_time_ns ||
+      !request.desired_present_ns) {
+    return;
+  }
+  uint64_t period_ns = 0;
+  {
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+    period_ns = counters_.refresh_cycle_now_ns;
+  }
+  const uint64_t anchor_ns = vsync_anchor_ns_;
+  if (!period_ns || !anchor_ns) {
+    return;
+  }
+  const auto vsync_at_or_after = [anchor_ns, period_ns](uint64_t t) {
+    if (t <= anchor_ns) {
+      return anchor_ns - (anchor_ns - t) / period_ns * period_ns;
+    }
+    return anchor_ns + (t - anchor_ns + period_ns - 1) / period_ns * period_ns;
+  };
+  // B's vsync as QuantizeToVsync would place it after a given previous
+  // present (its copy's reach left out: B's copy has not started yet).
+  const uint64_t b_target_ns =
+      request.desired_present_ns + request.next_real_offset_ns;
+  const auto place_b = [&](uint64_t last_slot_ns, uint64_t offset) {
+    uint64_t slot_ns = vsync_at_or_after(b_target_ns) + offset * period_ns;
+    if (last_slot_ns && slot_ns < last_slot_ns + period_ns / 2) {
+      slot_ns = last_slot_ns + period_ns;
+    }
+    return slot_ns;
+  };
+  const uint64_t with_ns = place_b(synthetic_slot_ns, vsync_offset_periods_);
+  const uint64_t without_ns = place_b(previous_slot_ns, offset_before);
+  ++shadow_synthetics_judged_;
+  if (with_ns > without_ns + period_ns / 2) {
+    ++shadow_would_delay_;
+    if (shadow_depth_ns_ && with_ns > request.issue_time_ns &&
+        with_ns - request.issue_time_ns > shadow_depth_ns_ + kShadowReserveNs) {
+      ++shadow_would_cut_;
+    }
+  }
+  // The last Synthetic before B owns the prediction (x3 / x4: k = n - 1).
+  for (ShadowPrediction& prediction : shadow_predictions_) {
+    if (prediction.source_id == request.source_id) {
+      prediction.predicted_ns = with_ns;
+      return;
+    }
+  }
+  shadow_predictions_[shadow_prediction_next_] = {request.source_id, with_ns};
+  shadow_prediction_next_ =
+      (shadow_prediction_next_ + 1) % shadow_predictions_.size();
+}
+
+void ZeroFGMainSurfaceEgress::LogSummary(
+    uint64_t window_ns, uint64_t refresh_ns,
+    const std::array<uint64_t, LatencyBatch::kCapacity>& sorted) {
+  const double seconds = double(window_ns) / 1e9;
+  if (seconds <= 0.5) {
+    return;
+  }
+  const auto ms = [](double ns) { return ns / 1e6; };
+  const size_t samples = latency_batch_.samples;
+  const auto age_ms = [&](size_t percent) -> double {
+    if (!samples) return 0.0;
+    const size_t rank = (samples * percent + 99) / 100;
+    return ms(double(sorted[std::min(samples - 1, rank ? rank - 1 : size_t(0))]));
+  };
+  std::vector<int64_t> errors = shadow_errors_ns_;
+  std::sort(errors.begin(), errors.end());
+  const auto error_ms = [&](size_t percent) -> double {
+    if (errors.empty()) return 0.0;
+    const size_t rank = (errors.size() * percent + 99) / 100;
+    return ms(double(errors[std::min(errors.size() - 1, rank ? rank - 1 : size_t(0))]));
+  };
+  std::string age = samples ? fmt::format("Real age p50/p99 {:.1f}/{:.1f} ms ({} timed)",
+                                          age_ms(50), age_ms(99), samples)
+                            : std::string("Real age not measured (no display timing)");
+  std::string prediction =
+      errors.empty() ? std::string("prediction not measured")
+                     : fmt::format("B prediction error p1/p50/p99 {:+.1f}/{:+.1f}/{:+.1f} ms ({} matched, {} not)",
+                                   error_ms(1), error_ms(50), error_ms(99), errors.size(),
+                                   shadow_error_unmatched_);
+  // Warning level on purpose: hosts route the presenter's info lines to their
+  // development logs, and this one line every 5 s is what a user's log must carry.
+  XELOGW(
+      "ZeroFG summary: refresh {:.2f} ms ({:.1f} Hz), D {:.1f} ms, shown {:.1f} Real/s + {:.1f} S/s; {}; {}; "
+      "shadow reserve (D+25 ms): {} of {} S would delay B, {} would be cut; tripwire (D+35 ms): {} Reals past it",
+      ms(double(refresh_ns)), refresh_ns ? 1e9 / double(refresh_ns) : 0.0, ms(double(shadow_depth_ns_)),
+      double(shadow_reals_presented_) / seconds, double(shadow_synthetics_presented_) / seconds, age,
+      prediction, shadow_would_delay_, shadow_synthetics_judged_, shadow_would_cut_, shadow_would_trip_);
+  shadow_reals_presented_ = 0;
+  shadow_synthetics_presented_ = 0;
+  shadow_synthetics_judged_ = 0;
+  shadow_would_delay_ = 0;
+  shadow_would_cut_ = 0;
+  shadow_would_trip_ = 0;
+  shadow_error_unmatched_ = 0;
+  shadow_errors_ns_.clear();
 }
 
 void ZeroFGMainSurfaceEgress::MaybeLogLatencyBatch(uint64_t now_ns, bool force) {
@@ -2084,6 +2224,8 @@ void ZeroFGMainSurfaceEgress::MaybeLogLatencyBatch(uint64_t now_ns, bool force) 
       latency_batch_.real_overtaken, latency_batch_.real_timed,
       latency_batch_.synthetic_timed, timing_available_, unmatched, query_errors,
       reliable, samples_us);
+  LogSummary(now_ns - latency_window_start_ns_, counters_.refresh_cycle_now_ns,
+             sorted);
   latency_window_start_ns_ = now_ns;
   latency_last_unmatched_ = counters_.timings_unmatched;
   latency_last_query_errors_ = counters_.timing_query_errors;

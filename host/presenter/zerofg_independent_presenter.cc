@@ -16540,6 +16540,14 @@ struct ZeroFGIndependentPresenter::Impl {
     request.latency_generation = generation;
     request.desired_present_ns = present_not_before_ns;
     request.output_quantum_ns = logical.candidate.semantic_output_quantum_ns;
+    // Shadow reservation (egress, observation only): where this pair's Real B
+    // is due after a Synthetic, and the operated depth D.
+    if (request.synthetic && logical.candidate.mfg_n > logical.candidate.mfg_k) {
+      request.next_real_offset_ns =
+          uint64_t(logical.candidate.mfg_n - logical.candidate.mfg_k) *
+          logical.candidate.semantic_output_quantum_ns;
+    }
+    request.operated_depth_ns = logical.operating_latency_ns;
     request.image = output.image;
     request.post_semaphore = output.post_completion_semaphore;
     request.post_value = output.post_completion_value;

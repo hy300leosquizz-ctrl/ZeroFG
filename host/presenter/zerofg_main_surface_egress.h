@@ -122,6 +122,12 @@ class ZeroFGMainSurfaceEgress {
     // The pacing's output quantum for this output (0 before it is armed). The
     // output shaper engages only while it is at least one 60 Hz period.
     uint64_t output_quantum_ns = 0;
+    // Shadow reservation (observation only, never moves a present): on a
+    // Synthetic, how far after its target its pair's Real B is due
+    // ((n - k) quanta); 0 on a Real. And the presenter's operated depth D
+    // (Better D) when the output was applied, 0 when unknown.
+    uint64_t next_real_offset_ns = 0;
+    uint64_t operated_depth_ns = 0;
     uint64_t apply_time_ns = 0;
     VkImage image = VK_NULL_HANDLE;
     // The Post's completion timeline point: the copy waits on it on the GPU.
@@ -593,6 +599,35 @@ class ZeroFGMainSurfaceEgress {
   uint64_t latency_last_unmatched_ = 0;
   uint64_t latency_last_query_errors_ = 0;
   LatencyBatch latency_batch_;
+  // Shadow reservation and summary (2026-11-27, docs ARMSX3_GOW3_LATENCY in
+  // the lab): egress-thread-only, never consulted by pacing. For every
+  // Synthetic the quantizer places, the vsync its pair's Real B would get with
+  // the Synthetic shown and without it; a cut is counted (not made) when the
+  // Synthetic pushes B a vsync later and past D + kShadowReserveNs. B's
+  // predicted vsync (with the Synthetic, the path taken) is checked against
+  // its actualPresentTime. Reals shown past D + kShadowTripNs are counted as
+  // the tripwire's would-be trips.
+  static constexpr uint64_t kShadowReserveNs = 25000000ull;
+  static constexpr uint64_t kShadowTripNs = 35000000ull;
+  struct ShadowPrediction {
+    uint64_t source_id = 0;
+    uint64_t predicted_ns = 0;
+  };
+  std::array<ShadowPrediction, 16> shadow_predictions_ = {};
+  size_t shadow_prediction_next_ = 0;
+  uint64_t shadow_depth_ns_ = 0;
+  uint64_t shadow_reals_presented_ = 0;
+  uint64_t shadow_synthetics_presented_ = 0;
+  uint64_t shadow_synthetics_judged_ = 0;
+  uint64_t shadow_would_delay_ = 0;
+  uint64_t shadow_would_cut_ = 0;
+  uint64_t shadow_would_trip_ = 0;
+  uint64_t shadow_error_unmatched_ = 0;
+  std::vector<int64_t> shadow_errors_ns_;
+  void ShadowReserve(const Request& request, uint64_t previous_slot_ns,
+                     uint64_t offset_before, uint64_t synthetic_slot_ns);
+  void LogSummary(uint64_t window_ns, uint64_t refresh_ns,
+                  const std::array<uint64_t, LatencyBatch::kCapacity>& sorted);
   // Upper bound of the last present's display time, for the shaper (0: none).
   uint64_t shaper_latest_display_ns_ = 0;
   // The shaper's degradation latch, under stats_mutex_: the open 1 s window of

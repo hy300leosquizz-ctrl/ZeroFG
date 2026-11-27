@@ -564,6 +564,19 @@ class ZeroFGMainSurfaceEgress {
   // next output could have reached one vsync earlier.
   uint32_t vsync_shed_streak_ = 0;
   static constexpr uint32_t kVsyncShedStreak = 8;
+  // Backlog drain (the owner 2026-11-27: Reals may be dropped in this case):
+  // outputs chained at least kBacklogDrainPeriods behind their own vsync
+  // because the previous present holds it, kBacklogDrainStreak in a row, with
+  // a source that fills the panel (no free vsync ever drains the chain): the
+  // output is dropped, Real or Synthetic, and the chain shortens by one.
+  bool DrainBacklog(const Request& request);
+  uint32_t backlog_streak_ = 0;
+  uint64_t backlog_drained_real_ = 0;
+  uint64_t backlog_drained_synthetic_ = 0;
+  uint64_t shadow_last_drained_real_ = 0;
+  uint64_t shadow_last_drained_synthetic_ = 0;
+  static constexpr uint64_t kBacklogDrainPeriods = 2;
+  static constexpr uint32_t kBacklogDrainStreak = 8;
   uint32_t tight_reach_window_presents_ = 0;
   uint32_t tight_reach_window_late_ = 0;
   bool last_quantize_tight_only_ = false;

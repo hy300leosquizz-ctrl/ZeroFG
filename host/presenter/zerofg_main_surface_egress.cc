@@ -2058,6 +2058,15 @@ void ZeroFGMainSurfaceEgress::ObserveRealLatency(const TimingRecord& record,
       actual_ns - record.issue_time_ns > shadow_depth_ns_ + kShadowTripNs) {
     ++shadow_would_trip_;
   }
+  if (record.desired_ns && record.assigned_vsync_ns &&
+      shadow_lattice_ns_.size() < 4096) {
+    shadow_lattice_ns_.push_back(int64_t(record.desired_ns) -
+                                 int64_t(record.issue_time_ns));
+    shadow_quantizer_ns_.push_back(int64_t(record.assigned_vsync_ns) -
+                                   int64_t(record.desired_ns));
+    shadow_display_ns_.push_back(int64_t(actual_ns) -
+                                 int64_t(record.assigned_vsync_ns));
+  }
   if (latency_batch_.samples == LatencyBatch::kCapacity) {
     ++latency_batch_.overflow;
     return;
@@ -2164,6 +2173,35 @@ void ZeroFGMainSurfaceEgress::LogSummary(
           ? fmt::format("D_need p50/p95 {:.1f}/{:.1f} ms ({} samples), F {:.1f} ms", ms(double(shadow_need_p50_ns_)),
                         ms(double(shadow_need_p95_ns_)), shadow_need_samples_, ms(double(shadow_margin_ns_)))
           : fmt::format("D_need not learned yet, F {:.1f} ms", ms(double(shadow_margin_ns_)));
+  const auto median_ms = [&](std::vector<int64_t>& values) -> double {
+    if (values.empty()) return 0.0;
+    std::nth_element(values.begin(), values.begin() + values.size() / 2, values.end());
+    return ms(double(values[values.size() / 2]));
+  };
+  uint64_t retired = 0, reanchor = 0, absorbed = 0, refused = 0;
+  {
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+    retired = counters_.vsync_retired - shadow_last_retired_;
+    reanchor = counters_.vsync_phase_reanchor - shadow_last_reanchor_;
+    absorbed = counters_.vsync_gap_absorbed - shadow_last_absorbed_;
+    refused = counters_.vsync_duplicate_refused - shadow_last_refused_;
+    shadow_last_retired_ = counters_.vsync_retired;
+    shadow_last_reanchor_ = counters_.vsync_phase_reanchor;
+    shadow_last_absorbed_ = counters_.vsync_gap_absorbed;
+    shadow_last_refused_ = counters_.vsync_duplicate_refused;
+  }
+  std::string split =
+      shadow_lattice_ns_.empty()
+          ? std::string("age split not measured")
+          : fmt::format("age split p50: issue->target {:.1f}, target->vsync {:.1f}, vsync->shown {:.1f} ms; "
+                        "quantizer offset {} vsync(s), {} pushed, {} absorbed, {} refused, {} S retired{}",
+                        median_ms(shadow_lattice_ns_), median_ms(shadow_quantizer_ns_),
+                        median_ms(shadow_display_ns_), vsync_offset_periods_, reanchor, absorbed, refused,
+                        retired, vsync_retire_ ? "" : " (retire off)");
+  shadow_lattice_ns_.clear();
+  shadow_quantizer_ns_.clear();
+  shadow_display_ns_.clear();
+  XELOGW("ZeroFG summary (quantizer): {}", split);
   // Warning level on purpose: hosts route the presenter's info lines to their
   // development logs, and this one line every 5 s is what a user's log must carry.
   XELOGW(

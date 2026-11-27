@@ -634,6 +634,17 @@ class ZeroFGMainSurfaceEgress {
   uint64_t shadow_would_trip_ = 0;
   uint64_t shadow_error_unmatched_ = 0;
   std::vector<int64_t> shadow_errors_ns_;
+  // The Real age split (summary only): Source issue to the output's target
+  // (the lattice, D included), target to its assigned vsync (the quantizer's
+  // push), and assigned vsync to actualPresentTime (the compositor). And the
+  // quantizer counters at the last summary, for the window's deltas.
+  std::vector<int64_t> shadow_lattice_ns_;
+  std::vector<int64_t> shadow_quantizer_ns_;
+  std::vector<int64_t> shadow_display_ns_;
+  uint64_t shadow_last_retired_ = 0;
+  uint64_t shadow_last_reanchor_ = 0;
+  uint64_t shadow_last_absorbed_ = 0;
+  uint64_t shadow_last_refused_ = 0;
   void ShadowReserve(const Request& request, uint64_t previous_slot_ns,
                      uint64_t offset_before, uint64_t synthetic_slot_ns);
   void LogSummary(uint64_t window_ns, uint64_t refresh_ns,

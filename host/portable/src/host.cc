@@ -22,7 +22,9 @@ DEFINE_bool(zerofg_phase_recovery, true, "", "ZeroFG");
 DEFINE_bool(zerofg_free_output, true, "", "ZeroFG");
 DEFINE_bool(zerofg_vsync_quantizer, true, "", "ZeroFG");
 DEFINE_bool(zerofg_vsync_tight_reach, false, "", "ZeroFG");
-DEFINE_bool(zerofg_vsync_retire, false, "", "ZeroFG");
+// On in the pacing-shadow test builds (2026-11-27): JoJo at a 30 lock on 60 Hz showed the quantizer's phase
+// pushed one vsync for long stretches (Real age +13 ms), with no free vsync at one output per refresh to shed into.
+DEFINE_bool(zerofg_vsync_retire, true, "", "ZeroFG");
 // No latency wells at one output per refresh (N x the game's rate = the
 // refresh): recoveries anchored at the oldest waiting Real, short pairs.
 DEFINE_bool(zerofg_mfg_tick_retire, true, "", "ZeroFG");

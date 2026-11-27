@@ -1089,6 +1089,10 @@ bool ZeroFGMainSurfaceEgress::ServeRequest(const Request& request,
       ++shadow_synthetics_presented_;
     } else {
       ++shadow_reals_presented_;
+      shadow_need_p50_ns_ = request.d_need_p50_ns;
+      shadow_need_p95_ns_ = request.d_need_p95_ns;
+      shadow_need_samples_ = request.d_need_samples;
+      shadow_margin_ns_ = request.d_margin_ns;
     }
     if (request.operated_depth_ns) {
       shadow_depth_ns_ = request.operated_depth_ns;
@@ -2155,12 +2159,17 @@ void ZeroFGMainSurfaceEgress::LogSummary(
                      : fmt::format("B prediction error p1/p50/p99 {:+.1f}/{:+.1f}/{:+.1f} ms ({} matched, {} not)",
                                    error_ms(1), error_ms(50), error_ms(99), errors.size(),
                                    shadow_error_unmatched_);
+  std::string need =
+      shadow_need_samples_
+          ? fmt::format("D_need p50/p95 {:.1f}/{:.1f} ms ({} samples), F {:.1f} ms", ms(double(shadow_need_p50_ns_)),
+                        ms(double(shadow_need_p95_ns_)), shadow_need_samples_, ms(double(shadow_margin_ns_)))
+          : fmt::format("D_need not learned yet, F {:.1f} ms", ms(double(shadow_margin_ns_)));
   // Warning level on purpose: hosts route the presenter's info lines to their
   // development logs, and this one line every 5 s is what a user's log must carry.
   XELOGW(
-      "ZeroFG summary: refresh {:.2f} ms ({:.1f} Hz), D {:.1f} ms, shown {:.1f} Real/s + {:.1f} S/s; {}; {}; "
+      "ZeroFG summary: refresh {:.2f} ms ({:.1f} Hz), D {:.1f} ms ({}), shown {:.1f} Real/s + {:.1f} S/s; {}; {}; "
       "shadow reserve (D+25 ms): {} of {} S would delay B, {} would be cut; tripwire (D+35 ms): {} Reals past it",
-      ms(double(refresh_ns)), refresh_ns ? 1e9 / double(refresh_ns) : 0.0, ms(double(shadow_depth_ns_)),
+      ms(double(refresh_ns)), refresh_ns ? 1e9 / double(refresh_ns) : 0.0, ms(double(shadow_depth_ns_)), need,
       double(shadow_reals_presented_) / seconds, double(shadow_synthetics_presented_) / seconds, age,
       prediction, shadow_would_delay_, shadow_synthetics_judged_, shadow_would_cut_, shadow_would_trip_);
   shadow_reals_presented_ = 0;

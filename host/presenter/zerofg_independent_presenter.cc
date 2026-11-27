@@ -16548,6 +16548,17 @@ struct ZeroFGIndependentPresenter::Impl {
           logical.candidate.semantic_output_quantum_ns;
     }
     request.operated_depth_ns = logical.operating_latency_ns;
+    // Better D's split for the summary line (on Reals only, so the quantiles
+    // are taken at the source's rate): the qualified need's median and p95
+    // (0 while the window is not ready) and the margin F.
+    if (!request.synthetic) {
+      if (BetterDWindowReady()) {
+        request.d_need_p50_ns = better_d_need_ns.Quantile(50, 100);
+        request.d_need_p95_ns = better_d_need_ns.Quantile(95, 100);
+        request.d_need_samples = uint32_t(better_d_need_ns.count());
+      }
+      request.d_margin_ns = better_d_f_ns;
+    }
     request.image = output.image;
     request.post_semaphore = output.post_completion_semaphore;
     request.post_value = output.post_completion_value;

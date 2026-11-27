@@ -128,6 +128,12 @@ class ZeroFGMainSurfaceEgress {
     // (Better D) when the output was applied, 0 when unknown.
     uint64_t next_real_offset_ns = 0;
     uint64_t operated_depth_ns = 0;
+    // Better D's split, on Reals (summary only): the qualified need's p50 and
+    // p95 and their sample count (0 before the window is ready), and F.
+    uint64_t d_need_p50_ns = 0;
+    uint64_t d_need_p95_ns = 0;
+    uint32_t d_need_samples = 0;
+    uint64_t d_margin_ns = 0;
     uint64_t apply_time_ns = 0;
     VkImage image = VK_NULL_HANDLE;
     // The Post's completion timeline point: the copy waits on it on the GPU.
@@ -616,6 +622,10 @@ class ZeroFGMainSurfaceEgress {
   std::array<ShadowPrediction, 16> shadow_predictions_ = {};
   size_t shadow_prediction_next_ = 0;
   uint64_t shadow_depth_ns_ = 0;
+  uint64_t shadow_need_p50_ns_ = 0;
+  uint64_t shadow_need_p95_ns_ = 0;
+  uint32_t shadow_need_samples_ = 0;
+  uint64_t shadow_margin_ns_ = 0;
   uint64_t shadow_reals_presented_ = 0;
   uint64_t shadow_synthetics_presented_ = 0;
   uint64_t shadow_synthetics_judged_ = 0;

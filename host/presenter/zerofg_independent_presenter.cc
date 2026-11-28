@@ -11457,8 +11457,13 @@ struct ZeroFGIndependentPresenter::Impl {
     // latency for that much less readiness. Never below the ordered floor.
     if (main_surface_egress) {
       uint64_t grid_anchor_ns = 0, grid_period_ns = 0, grid_lead_ns = 0;
+      // Only where every output has a vsync of its own (quantum >= ~a
+      // refresh): over capacity the yield rule decides, and the snap made
+      // outputs late enough to set phase recovery reanchoring 4x as often
+      // (Spider-Man on ARMSX2, 2026-11-27: 605 reanchors against 142).
       if (main_surface_egress->VsyncGrid(grid_anchor_ns, grid_period_ns,
-                                         grid_lead_ns)) {
+                                         grid_lead_ns) &&
+          new_output_quantum_ns * 20 >= grid_period_ns * 19) {
         const uint64_t due_ns = first_target_ns + grid_lead_ns;
         const uint64_t past_ns =
             due_ns >= grid_anchor_ns

@@ -486,6 +486,7 @@ struct ZeroFGIndependentPresenter::Impl {
   // margin it then keeps before that vsync.
   static constexpr uint64_t kVsyncSnapNs = 3500000ull;
   static constexpr uint64_t kVsyncSnapMarginNs = 300000ull;
+  static constexpr uint64_t kVsyncSnapSpacingNs = 2000000000ull;
   static constexpr uint32_t kBetterDStepDivisor = 64;
   static constexpr uint32_t kBetterDArmDivisor = 4;
   static constexpr uint64_t kBetterDMarginNs = 1000000ull;
@@ -11457,13 +11458,16 @@ struct ZeroFGIndependentPresenter::Impl {
     // latency for that much less readiness. Never below the ordered floor.
     if (main_surface_egress) {
       uint64_t grid_anchor_ns = 0, grid_period_ns = 0, grid_lead_ns = 0;
-      // Only where every output has a vsync of its own (quantum >= ~a
-      // refresh): over capacity the yield rule decides, and the snap made
-      // outputs late enough to set phase recovery reanchoring 4x as often
-      // (Spider-Man on ARMSX2, 2026-11-27: 605 reanchors against 142).
-      if (main_surface_egress->VsyncGrid(grid_anchor_ns, grid_period_ns,
-                                         grid_lead_ns) &&
-          new_output_quantum_ns * 20 >= grid_period_ns * 19) {
+      // Only for a steady Source (phase recovery trusts its rate estimate) and
+      // at most once per kVsyncSnapSpacingNs: on Spider-Man (ARMSX2, ~50 fps
+      // wandering, 2026-11-27) the snap made outputs late enough to set phase
+      // recovery reanchoring 4x as often (605 against 142) and the Real age p99
+      // rose 83 -> 96 ms; on Daytona's steady 60 it took 7 ms off the median.
+      const uint64_t snap_now_ns = PresenterMonotonicTimeNs();
+      if (phase_recovery_trusted_period_ns &&
+          snap_now_ns - vsync_snap_last_ns >= kVsyncSnapSpacingNs &&
+          main_surface_egress->VsyncGrid(grid_anchor_ns, grid_period_ns,
+                                         grid_lead_ns)) {
         const uint64_t due_ns = first_target_ns + grid_lead_ns;
         const uint64_t past_ns =
             due_ns >= grid_anchor_ns
@@ -11479,6 +11483,7 @@ struct ZeroFGIndependentPresenter::Impl {
             first_target_ns - step_ns >= std::max(floor_ns, cutover_floor_ns)) {
           first_target_ns -= step_ns;
           ++vsync_snap_total;
+          vsync_snap_last_ns = snap_now_ns;
         } else {
           ++vsync_snap_skipped_total;
         }
@@ -19916,6 +19921,7 @@ struct ZeroFGIndependentPresenter::Impl {
   // those the grid knew of but could not (past the window, or a floor).
   uint64_t vsync_snap_total = 0;
   uint64_t vsync_snap_skipped_total = 0;
+  uint64_t vsync_snap_last_ns = 0;
   uint64_t mfg_short_real_only_total = 0;
   uint32_t mfg_desired_n = 0;  // a different N the rule wants, and since when (debounce)
   uint64_t mfg_desired_since_ns = 0;

@@ -2119,6 +2119,16 @@ void ZeroFGMainSurfaceEgress::ObserveRealLatency(const TimingRecord& record,
       actual_ns - record.issue_time_ns > shadow_depth_ns_ + kShadowTripNs) {
     ++shadow_would_trip_;
   }
+  // The tripwire (active): the Real's egress lag, target to actualPresentTime.
+  if (vsync_retire_ && record.desired_ns && actual_ns > record.desired_ns) {
+    const uint64_t period_ns = grid_period_ns_.load(std::memory_order_relaxed);
+    if (period_ns && actual_ns - record.desired_ns > kTripPeriods * period_ns) {
+      if (now_ns >= trip_hold_until_ns_) {
+        ++trips_;
+      }
+      trip_hold_until_ns_ = now_ns + kTripHoldPeriods * period_ns;
+    }
+  }
   if (record.desired_ns && record.assigned_vsync_ns &&
       shadow_lattice_ns_.size() < 4096) {
     shadow_lattice_ns_.push_back(int64_t(record.desired_ns) -
@@ -2145,9 +2155,16 @@ void ZeroFGMainSurfaceEgress::ObserveRealLatency(const TimingRecord& record,
 }
 
 bool ZeroFGMainSurfaceEgress::YieldToReal(const Request& request) {
-  if (!request.synthetic || !request.next_real_offset_ns ||
-      !request.output_quantum_ns || !request.desired_present_ns ||
-      limiter_period_ns_ || limiter_block_streak_ || !vsync_anchor_ns_) {
+  if (!request.synthetic) {
+    return false;
+  }
+  if (trip_hold_until_ns_ && EgressMonotonicTimeNs() < trip_hold_until_ns_) {
+    ++trip_held_synthetic_;
+    return true;
+  }
+  if (!request.next_real_offset_ns || !request.output_quantum_ns ||
+      !request.desired_present_ns || limiter_period_ns_ ||
+      limiter_block_streak_ || !vsync_anchor_ns_) {
     return false;
   }
   uint64_t period_ns = 0;
@@ -2155,10 +2172,17 @@ bool ZeroFGMainSurfaceEgress::YieldToReal(const Request& request) {
     std::lock_guard<std::mutex> lock(stats_mutex_);
     period_ns = counters_.refresh_cycle_now_ns;
   }
-  // Only over capacity: outputs spaced closer than a refresh (ARMSX2 at 60 fps
+  if (!period_ns) {
+    return false;
+  }
+  // Over capacity: outputs spaced closer than a refresh (ARMSX2 at 60 fps
   // x2 on 60 Hz, 2026-11-27: the S that got through re-formed a chain of Reals
-  // the backlog drain then cut 2-6 Reals a second out of).
-  if (!period_ns || request.output_quantum_ns * 20 >= period_ns * 19) {
+  // the backlog drain then cut 2-6 Reals a second out of). Below it, only the
+  // last Synthetic before B is judged, by the reserve.
+  const bool over_capacity =
+      request.output_quantum_ns * 20 < period_ns * 19;
+  if (!over_capacity &&
+      request.next_real_offset_ns != request.output_quantum_ns) {
     return false;
   }
   const uint64_t anchor_ns = vsync_anchor_ns_;
@@ -2181,10 +2205,26 @@ bool ZeroFGMainSurfaceEgress::YieldToReal(const Request& request) {
                         request.next_real_offset_ns) + offset_ns;
   const uint64_t b_with_ns = after(b_own_ns, s_slot_ns);
   const uint64_t b_without_ns = after(b_own_ns, vsync_last_slot_ns_);
-  if (b_with_ns <= b_without_ns + period_ns / 2) {
+  const bool delays_b = b_with_ns > b_without_ns + period_ns / 2;
+  if (over_capacity) {
+    if (!delays_b) {
+      return false;
+    }
+    ++yielded_synthetic_;
+    return true;
+  }
+  if (!delays_b || !request.issue_time_ns || !request.operated_depth_ns ||
+      b_with_ns <= request.issue_time_ns ||
+      b_with_ns - request.issue_time_ns <=
+          request.operated_depth_ns + kShadowReserveNs) {
+    reserve_streak_ = 0;
     return false;
   }
-  ++yielded_synthetic_;
+  if (++reserve_streak_ < kReserveStreak) {
+    return false;
+  }
+  reserve_streak_ = 0;
+  ++reserved_synthetic_;
   return true;
 }
 
@@ -2343,6 +2383,7 @@ void ZeroFGMainSurfaceEgress::LogSummary(
           : fmt::format("age split p50: issue->target {:.1f}, target->vsync {:.1f}, vsync->shown {:.1f} ms; "
                         "quantizer offset {} vsync(s), {} pushed, {} absorbed, {} refused, {} S retired{}; "
                         "backlog drained {} Real(s) + {} S; {} S yielded to their Real; "
+                        "{} S cut by the reserve; tripwire {} trip(s), {} S held; "
                         "vsync snap {} of {} reanchors",
                         median_ms(shadow_lattice_ns_), median_ms(shadow_quantizer_ns_),
                         median_ms(shadow_display_ns_), vsync_offset_periods_, reanchor, absorbed, refused,
@@ -2350,10 +2391,16 @@ void ZeroFGMainSurfaceEgress::LogSummary(
                         backlog_drained_real_ - shadow_last_drained_real_,
                         backlog_drained_synthetic_ - shadow_last_drained_synthetic_,
                         yielded_synthetic_ - shadow_last_yielded_,
+                        reserved_synthetic_ - shadow_last_reserved_,
+                        trips_ - shadow_last_trips_,
+                        trip_held_synthetic_ - shadow_last_trip_held_,
                         shadow_snaps_ - shadow_last_snaps_,
                         (shadow_snaps_ - shadow_last_snaps_) +
                             (shadow_snaps_skipped_ - shadow_last_snaps_skipped_));
   shadow_last_yielded_ = yielded_synthetic_;
+  shadow_last_reserved_ = reserved_synthetic_;
+  shadow_last_trips_ = trips_;
+  shadow_last_trip_held_ = trip_held_synthetic_;
   shadow_last_snaps_ = shadow_snaps_;
   shadow_last_snaps_skipped_ = shadow_snaps_skipped_;
   shadow_last_drained_real_ = backlog_drained_real_;

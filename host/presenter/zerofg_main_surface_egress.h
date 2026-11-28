@@ -589,9 +589,27 @@ class ZeroFGMainSurfaceEgress {
   // Over capacity (the lattice's quantum shorter than a refresh: not every
   // output can have a vsync of its own), a Synthetic yields its vsync to its
   // pair's Real: dropped when showing it would push B a vsync later.
+  // Below capacity (2026-11-28, the shadow reservation made active): the
+  // last Synthetic before B is dropped when it pushes B a vsync later and
+  // past D + kShadowReserveNs, kReserveStreak pairs in a row (a chain, not one
+  // late B). The tripwire: a Real shown more than kTripPeriods refreshes after
+  // its target (the egress's lag, not the lattice's: a slow Source's age is
+  // not the Synthetics' fault) holds every Synthetic for kTripHoldPeriods
+  // refreshes, so the chain drains; the Synthetics return as the slots free.
   bool YieldToReal(const Request& request);
   uint64_t yielded_synthetic_ = 0;
   uint64_t shadow_last_yielded_ = 0;
+  uint32_t reserve_streak_ = 0;
+  uint64_t reserved_synthetic_ = 0;
+  uint64_t shadow_last_reserved_ = 0;
+  uint64_t trip_hold_until_ns_ = 0;
+  uint64_t trips_ = 0;
+  uint64_t trip_held_synthetic_ = 0;
+  uint64_t shadow_last_trips_ = 0;
+  uint64_t shadow_last_trip_held_ = 0;
+  static constexpr uint32_t kReserveStreak = 3;
+  static constexpr uint64_t kTripPeriods = 5;
+  static constexpr uint64_t kTripHoldPeriods = 6;
   uint32_t backlog_streak_ = 0;
   uint64_t backlog_drained_real_ = 0;
   uint64_t backlog_drained_synthetic_ = 0;

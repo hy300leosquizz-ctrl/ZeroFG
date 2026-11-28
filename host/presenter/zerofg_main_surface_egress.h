@@ -134,6 +134,9 @@ class ZeroFGMainSurfaceEgress {
     uint64_t d_need_p95_ns = 0;
     uint32_t d_need_samples = 0;
     uint64_t d_margin_ns = 0;
+    // The presenter's vsync snap totals (summary only), on Reals.
+    uint64_t vsync_snaps = 0;
+    uint64_t vsync_snaps_skipped = 0;
     uint64_t apply_time_ns = 0;
     VkImage image = VK_NULL_HANDLE;
     // The Post's completion timeline point: the copy waits on it on the GPU.
@@ -314,6 +317,16 @@ class ZeroFGMainSurfaceEgress {
   bool HasCapacity() const;
   // The panel's current refresh period as last observed (0: not yet known).
   uint64_t RefreshCycleNs() const;
+  // The vsync quantizer's lattice (an anchor vsync and the refresh) and the
+  // lead an output needs from its present call to the first vsync it can make;
+  // false until the quantizer has placed an output. Any thread.
+  bool VsyncGrid(uint64_t& anchor_ns, uint64_t& period_ns,
+                 uint64_t& lead_ns) const {
+    anchor_ns = grid_anchor_ns_.load(std::memory_order_relaxed);
+    period_ns = grid_period_ns_.load(std::memory_order_relaxed);
+    lead_ns = grid_lead_ns_.load(std::memory_order_relaxed);
+    return anchor_ns && period_ns && lead_ns;
+  }
   // Refuses while B does not produce (no swapchain yet, or handing back):
   // presentation is closed then, which is not ring pressure.
   EnqueueResult TryEnqueue(const Request& request);
@@ -562,6 +575,9 @@ class ZeroFGMainSurfaceEgress {
   uint32_t vsync_behind_streak_ = 0;
   // Pushed-phase shed (2026-11-27): consecutive outputs whose pushed phase the
   // next output could have reached one vsync earlier.
+  std::atomic<uint64_t> grid_anchor_ns_{0};
+  std::atomic<uint64_t> grid_period_ns_{0};
+  std::atomic<uint64_t> grid_lead_ns_{0};
   uint32_t vsync_shed_streak_ = 0;
   static constexpr uint32_t kVsyncShedStreak = 8;
   // Backlog drain (the owner 2026-11-27: Reals may be dropped in this case):
@@ -649,6 +665,10 @@ class ZeroFGMainSurfaceEgress {
   uint64_t shadow_need_p95_ns_ = 0;
   uint32_t shadow_need_samples_ = 0;
   uint64_t shadow_margin_ns_ = 0;
+  uint64_t shadow_snaps_ = 0;
+  uint64_t shadow_snaps_skipped_ = 0;
+  uint64_t shadow_last_snaps_ = 0;
+  uint64_t shadow_last_snaps_skipped_ = 0;
   uint64_t shadow_reals_presented_ = 0;
   uint64_t shadow_synthetics_presented_ = 0;
   uint64_t shadow_synthetics_judged_ = 0;

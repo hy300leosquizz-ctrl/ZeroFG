@@ -1101,6 +1101,8 @@ bool ZeroFGMainSurfaceEgress::ServeRequest(const Request& request,
       shadow_need_p95_ns_ = request.d_need_p95_ns;
       shadow_need_samples_ = request.d_need_samples;
       shadow_margin_ns_ = request.d_margin_ns;
+      shadow_snaps_ = request.vsync_snaps;
+      shadow_snaps_skipped_ = request.vsync_snaps_skipped;
     }
     if (request.operated_depth_ns) {
       shadow_depth_ns_ = request.operated_depth_ns;
@@ -1617,6 +1619,15 @@ uint64_t ZeroFGMainSurfaceEgress::QuantizeToVsync(uint64_t target_ns,
                                          copy_tail_ns) +
                                 kVsyncLatchMarginNs)
             : sum_reach_ns;
+  // The grid for the presenter's vsync snap (VsyncGrid): the vsync lattice and
+  // the lead an output needs from its present call to its first reachable vsync.
+  grid_anchor_ns_.store(anchor_ns, std::memory_order_relaxed);
+  grid_period_ns_.store(period_ns, std::memory_order_relaxed);
+  grid_lead_ns_.store(
+      (tight ? std::max(period_ns + kCompositorLeadExtraNs, copy_tail_ns)
+             : copy_ns + period_ns) +
+          kVsyncLatchMarginNs,
+      std::memory_order_relaxed);
   uint64_t slot_ns =
       vsync_at_or_after(target_ns) + vsync_offset_periods_ * period_ns;
   bool reanchored = false;
@@ -2331,14 +2342,20 @@ void ZeroFGMainSurfaceEgress::LogSummary(
           ? std::string("age split not measured")
           : fmt::format("age split p50: issue->target {:.1f}, target->vsync {:.1f}, vsync->shown {:.1f} ms; "
                         "quantizer offset {} vsync(s), {} pushed, {} absorbed, {} refused, {} S retired{}; "
-                        "backlog drained {} Real(s) + {} S; {} S yielded to their Real",
+                        "backlog drained {} Real(s) + {} S; {} S yielded to their Real; "
+                        "vsync snap {} of {} reanchors",
                         median_ms(shadow_lattice_ns_), median_ms(shadow_quantizer_ns_),
                         median_ms(shadow_display_ns_), vsync_offset_periods_, reanchor, absorbed, refused,
                         retired, vsync_retire_ ? "" : " (retire off)",
                         backlog_drained_real_ - shadow_last_drained_real_,
                         backlog_drained_synthetic_ - shadow_last_drained_synthetic_,
-                        yielded_synthetic_ - shadow_last_yielded_);
+                        yielded_synthetic_ - shadow_last_yielded_,
+                        shadow_snaps_ - shadow_last_snaps_,
+                        (shadow_snaps_ - shadow_last_snaps_) +
+                            (shadow_snaps_skipped_ - shadow_last_snaps_skipped_));
   shadow_last_yielded_ = yielded_synthetic_;
+  shadow_last_snaps_ = shadow_snaps_;
+  shadow_last_snaps_skipped_ = shadow_snaps_skipped_;
   shadow_last_drained_real_ = backlog_drained_real_;
   shadow_last_drained_synthetic_ = backlog_drained_synthetic_;
   shadow_lattice_ns_.clear();

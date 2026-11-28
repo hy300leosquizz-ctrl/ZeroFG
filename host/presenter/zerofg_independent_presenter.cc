@@ -481,6 +481,11 @@ struct ZeroFGIndependentPresenter::Impl {
   static constexpr uint64_t kBetterDFMaxNs = 32000000ull;
   // The most D may operate at (ApplyBetterDSetpoint): a 20 fps source's need.
   static constexpr uint64_t kBetterDCeilingNs = 60000000ull;
+  // Vsync snap (ApplyPendingSourcePhaseReanchor): how far past a vsync the first
+  // target plus the egress lead may land and still be pulled back to it, and the
+  // margin it then keeps before that vsync.
+  static constexpr uint64_t kVsyncSnapNs = 3500000ull;
+  static constexpr uint64_t kVsyncSnapMarginNs = 300000ull;
   static constexpr uint32_t kBetterDStepDivisor = 64;
   static constexpr uint32_t kBetterDArmDivisor = 4;
   static constexpr uint64_t kBetterDMarginNs = 1000000ull;
@@ -11445,6 +11450,35 @@ struct ZeroFGIndependentPresenter::Impl {
         first_target_ns == std::numeric_limits<uint64_t>::max()) {
       return false;
     }
+    // Vsync snap (the owner 2026-11-27, option A): an output shows on the first
+    // vsync at or after its target plus the egress lead. When the lattice's
+    // first target lands that sum just past a vsync (by up to kVsyncSnapNs),
+    // the epoch starts early enough to make that vsync instead: a refresh of
+    // latency for that much less readiness. Never below the ordered floor.
+    if (main_surface_egress) {
+      uint64_t grid_anchor_ns = 0, grid_period_ns = 0, grid_lead_ns = 0;
+      if (main_surface_egress->VsyncGrid(grid_anchor_ns, grid_period_ns,
+                                         grid_lead_ns)) {
+        const uint64_t due_ns = first_target_ns + grid_lead_ns;
+        const uint64_t past_ns =
+            due_ns >= grid_anchor_ns
+                ? (due_ns - grid_anchor_ns) % grid_period_ns
+                : (grid_period_ns - (grid_anchor_ns - due_ns) % grid_period_ns) %
+                      grid_period_ns;
+        const uint64_t floor_ns =
+            ordered_boundary_ns
+                ? SaturatingAddNs(ordered_boundary_ns, new_output_quantum_ns)
+                : 0;
+        const uint64_t step_ns = past_ns + kVsyncSnapMarginNs;
+        if (past_ns && past_ns <= kVsyncSnapNs && first_target_ns > step_ns &&
+            first_target_ns - step_ns >= std::max(floor_ns, cutover_floor_ns)) {
+          first_target_ns -= step_ns;
+          ++vsync_snap_total;
+        } else {
+          ++vsync_snap_skipped_total;
+        }
+      }
+    }
     // The reanchor cutover. The first Real committed in the new epoch keeps
     // its predecessor and S(A->B) in the old epoch, so its causal floor is its
     // pair boundary (cutover_floor_ns, ReanchorCutoverFloorNs). A first tick
@@ -16566,6 +16600,8 @@ struct ZeroFGIndependentPresenter::Impl {
         request.d_need_samples = uint32_t(better_d_need_ns.count());
       }
       request.d_margin_ns = better_d_f_ns;
+      request.vsync_snaps = vsync_snap_total;
+      request.vsync_snaps_skipped = vsync_snap_skipped_total;
     }
     request.image = output.image;
     request.post_semaphore = output.post_completion_semaphore;
@@ -19871,6 +19907,10 @@ struct ZeroFGIndependentPresenter::Impl {
   uint32_t mfg_short_pending_count = 0;
   bool mfg_short_rest = false;
   uint64_t mfg_short_pair_total = 0;
+  // Vsync snap: reanchors whose first target was pulled back to a vsync, and
+  // those the grid knew of but could not (past the window, or a floor).
+  uint64_t vsync_snap_total = 0;
+  uint64_t vsync_snap_skipped_total = 0;
   uint64_t mfg_short_real_only_total = 0;
   uint32_t mfg_desired_n = 0;  // a different N the rule wants, and since when (debounce)
   uint64_t mfg_desired_since_ns = 0;

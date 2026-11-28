@@ -1,6 +1,6 @@
 # ZeroFG
 
-> Frame generation for mobile GPUs, built on Vulkan. **Version 1.2.1.**
+> Frame generation for mobile GPUs, built on Vulkan. **Version 1.2.2.**
 
 ZeroFG multiplies a game's frame rate by the factor you choose (x2, x3 or x4)
 by creating synthetic frames between the real ones. A game at 30 fps can show
@@ -39,6 +39,28 @@ frames in between along that motion.
 | --- | --- | --- |
 | Adreno 840 | 0.78 ms | 2.58 ms |
 | Adreno 650 (Turnip) | about 10 ms | |
+
+## What's new in 1.2.2
+
+Less latency, from the presenter alone (the engine is the same as 1.2.1):
+
+- **A game at half the refresh** (30 fps x2 on 60 Hz) no longer keeps its
+  outputs one vsync late for good: the presenter sheds that lag as soon as
+  the next output can make an earlier vsync. on ARMSX2, with a game locked at
+  30 fps, the game's frame reached the screen in 78.5 ms instead of 91 (median).
+- **A game near the refresh** (55-60 fps x2 on 60 Hz, where not every
+  generated frame fits): a generated frame gives its vsync to the real frame
+  after it instead of pushing it later. 74 → 57 ms (median), and the real
+  frames are no longer dropped.
+- **An erratic game** (frames of 20 and 30 ms in turn): the presenter's delay
+  is capped at 60 ms, a 20 fps game's need, and a backlog the screen can never
+  drain is cut. A generated frame that keeps pushing its real frame a vsync
+  late is skipped, and if a real frame still reaches the screen more than 5
+  vsyncs after its time, the generated frames wait a moment so the queue
+  drains. The worst frames of a broken Daytona USA went from 169 to 130 ms.
+- **One line every 5 s in the host's log** with the refresh, the delay and
+  what it needs, the frames shown, and the real frames' age on screen, so a
+  user's log says where the latency comes from.
 
 ## What's new in 1.2.1
 
@@ -197,7 +219,7 @@ Or let CMake fetch it:
 include(FetchContent)
 FetchContent_Declare(zerofg
   GIT_REPOSITORY https://github.com/hy300leosquizz-ctrl/ZeroFG.git
-  GIT_TAG v1.2.1)
+  GIT_TAG v1.2.2)
 FetchContent_MakeAvailable(zerofg)
 target_link_libraries(my_host PRIVATE zerofg::zerofg)
 ```
